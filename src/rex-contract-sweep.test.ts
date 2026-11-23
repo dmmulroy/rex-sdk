@@ -22,6 +22,7 @@ import { BlockId, SessionId } from "./rex-domain.ts";
 import { rexLayout, type RexLayoutNode } from "./rex-layout.ts";
 import type { RexBlockMethodArgs, RexMethodInput } from "./rex-operation.ts";
 import { RexSdk, type IRexSdk } from "./rex-sdk.ts";
+import { rexBlockMethodExamples } from "./testing/rex-block-method-examples.ts";
 import { runRexSdkTest } from "./testing/rex-test-runtime.ts";
 
 const RexApiExamples = Schema.Struct({
@@ -155,8 +156,6 @@ function sweepBlockMethod<Method extends RexBlockMethod>(
   };
 }
 
-const updatedAt = "2026-10-29T00:00:00Z";
-
 const sweep: ReadonlyArray<SweepEntry> = [
   // server
   sweepMethod("server.status", (sdk) => sdk.server.status()),
@@ -277,128 +276,104 @@ const sweep: ReadonlyArray<SweepEntry> = [
   sweepBlockMethod(
     "com.superlogical.terminal.write",
     (sdk, args) => sdk.terminals.write(target, args),
-    { data: "ls\r" },
-    { bytes_written: 3 },
+    rexBlockMethodExamples["com.superlogical.terminal.write"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.write"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.format",
     (sdk, args) => sdk.terminals.format(target, args),
-    { trim: true },
-    { content: "$ ls" },
+    rexBlockMethodExamples["com.superlogical.terminal.format"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.format"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.blob_read",
     (sdk, args) => sdk.terminals.blobRead(target, args),
-    { id: 4, offset: 10 },
-    { id: 4, data: "rest", total: 14, eof: true },
+    rexBlockMethodExamples["com.superlogical.terminal.blob_read"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.blob_read"].result,
   ),
-  sweepBlockMethod("com.superlogical.terminal.clear", (sdk) => sdk.terminals.clear(target), {}, {}),
-  sweepBlockMethod("com.superlogical.terminal.reset", (sdk) => sdk.terminals.reset(target), {}, {}),
+  sweepBlockMethod(
+    "com.superlogical.terminal.clear",
+    (sdk) => sdk.terminals.clear(target),
+    rexBlockMethodExamples["com.superlogical.terminal.clear"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.clear"].result,
+  ),
+  sweepBlockMethod(
+    "com.superlogical.terminal.reset",
+    (sdk) => sdk.terminals.reset(target),
+    rexBlockMethodExamples["com.superlogical.terminal.reset"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.reset"].result,
+  ),
   sweepBlockMethod(
     "com.superlogical.terminal.resize",
     (sdk, args) => sdk.terminals.resize(target, args),
-    { columns: 120, rows: 40 },
-    {},
+    rexBlockMethodExamples["com.superlogical.terminal.resize"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.resize"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.size",
     (sdk) => sdk.terminals.size(target),
-    {},
-    {
-      columns: 120,
-      rows: 40,
-      cell_width_px: 9,
-      cell_height_px: 18,
-      owner: null,
-      desired: [
-        {
-          client_id: "client:01234567-89ab-cdef-0123-456789abcdef",
-          columns: 120,
-          rows: 40,
-          updated_at: updatedAt,
-        },
-      ],
-    },
+    rexBlockMethodExamples["com.superlogical.terminal.size"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.size"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.set_theme",
     (sdk, args) => sdk.terminals.setTheme(target, args),
-    { foreground: "#ffffff", background: "#000000" },
-    {},
+    rexBlockMethodExamples["com.superlogical.terminal.set_theme"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.set_theme"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.title",
     (sdk) => sdk.terminals.title(target),
-    {},
-    { title: "zsh", owner: { pid: 42, name: "zsh" } },
+    rexBlockMethodExamples["com.superlogical.terminal.title"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.title"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.pwd",
     (sdk) => sdk.terminals.pwd(target),
-    {},
-    { pwd: "file://host/Users/me", owner: { pid: 42, name: "zsh" } },
+    rexBlockMethodExamples["com.superlogical.terminal.pwd"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.pwd"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.process",
     (sdk) => sdk.terminals.process(target),
-    {},
-    {
-      last_exit: null,
-      child: { pid: 42, user_id: 501, name: "zsh" },
-    },
+    rexBlockMethodExamples["com.superlogical.terminal.process"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.process"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.modes",
     (sdk) => sdk.terminals.modes(target),
-    {},
-    {
-      screen: "primary",
-      modes: [{ name: "bracketed_paste", number: 2004, set: true }],
-    },
+    rexBlockMethodExamples["com.superlogical.terminal.modes"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.modes"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.input_mode",
     (sdk) => sdk.terminals.inputMode(target),
-    {},
-    { echo: true, canonical: true, signals: true },
+    rexBlockMethodExamples["com.superlogical.terminal.input_mode"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.input_mode"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.list_dir",
     (sdk, args) => sdk.terminals.listDir(target, args),
-    { path: "~", files: true },
-    {
-      path: "/Users/me",
-      home: "/Users/me",
-      status: "ok",
-      entries: [{ name: "src" }, { name: "README.md", file: true }],
-      truncated: false,
-    },
+    rexBlockMethodExamples["com.superlogical.terminal.list_dir"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.list_dir"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.clipboard_read",
     (sdk, args) => sdk.terminals.clipboardRead(target, args),
-    { id: 2 },
-    { id: 2, data: "copied", total: 6, eof: true },
+    rexBlockMethodExamples["com.superlogical.terminal.clipboard_read"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.clipboard_read"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.program_status",
     (sdk) => sdk.terminals.programStatus(target),
-    {},
-    {
-      records: [{ id: "agent", state: "working", updated_at: updatedAt }],
-    },
+    rexBlockMethodExamples["com.superlogical.terminal.program_status"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.program_status"].result,
   ),
   sweepBlockMethod(
     "com.superlogical.terminal.ports",
     (sdk) => sdk.terminals.ports(target),
-    {},
-    {
-      status: "ok",
-      ports: [
-        { port: 5173, address: "127.0.0.1", protocol: "tcp", first_seen_at: updatedAt, pid: 42 },
-      ],
-      processes: [{ pid: 42, user_id: 501, name: "node", cwd: "/Users/me/app" }],
-    },
+    rexBlockMethodExamples["com.superlogical.terminal.ports"].args,
+    rexBlockMethodExamples["com.superlogical.terminal.ports"].result,
   ),
   // file transfers: the SDK picks the ref, so the sweep matches its form rather than its value.
   {
@@ -412,19 +387,8 @@ const sweep: ReadonlyArray<SweepEntry> = [
             args.ifNoneMatch === undefined ? {} : { ifNoneMatch: args.ifNoneMatch },
           ),
         ),
-      {
-        ref: "download:01234567-89ab-cdef-0123-456789abcdef",
-        path: "report.csv",
-        if_none_match: "v1",
-      },
-      {
-        not_modified: true,
-        path: "/srv/report.csv",
-        name: "report.csv",
-        size: 11,
-        modified_at: updatedAt,
-        version: "v1",
-      },
+      rexBlockMethodExamples["com.superlogical.terminal.download_begin"].args,
+      rexBlockMethodExamples["com.superlogical.terminal.download_begin"].result,
     ),
     expectedRequest: {
       session_id: target.sessionId,
@@ -444,8 +408,8 @@ const sweep: ReadonlyArray<SweepEntry> = [
         sdk.terminals
           .pasteFiles(target, [{ name: args.name, data: "hello" }])
           .pipe(Effect.catchTag("RexDataRejected", () => Effect.void)),
-      { ref: "upload:01234567-89ab-cdef-0123-456789abcdef", name: "notes.txt", size: 5 },
-      { ticket: "AAECAwQFBgcICQoLDA0ODw", expires_in_ms: 60_000 },
+      rexBlockMethodExamples["com.superlogical.terminal.upload_begin"].args,
+      rexBlockMethodExamples["com.superlogical.terminal.upload_begin"].result,
     ),
     expectedRequest: {
       session_id: target.sessionId,
@@ -457,8 +421,8 @@ const sweep: ReadonlyArray<SweepEntry> = [
   sweepBlockMethod(
     "com.superlogical.tunnel.info",
     (sdk) => sdk.tunnels.info(target),
-    {},
-    { flavor: "dial", target: "127.0.0.1:5432", connections: 1 },
+    rexBlockMethodExamples["com.superlogical.tunnel.info"].args,
+    rexBlockMethodExamples["com.superlogical.tunnel.info"].result,
   ),
 ];
 

@@ -85,6 +85,34 @@ export interface RexSplitLayoutNode {
 export type RexLayoutNode = RexTerminalLayoutNode | RexBlockLayoutNode | RexSplitLayoutNode;
 
 /**
+ * Schema of a layout tree, for callers that receive layouts as data, such as tool arguments.
+ * Ratios and terminal options are still checked when the layout is encoded.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const RexLayoutNode: Schema.Codec<RexLayoutNode> = Schema.Union([
+  Schema.Struct({
+    _tag: Schema.Literal("Terminal"),
+    label: Schema.optionalKey(Schema.String),
+    options: Schema.optionalKey(Schema.toType(TerminalShellOptions)),
+  }),
+  Schema.Struct({
+    _tag: Schema.Literal("Block"),
+    flavor: Schema.String,
+    label: Schema.optionalKey(Schema.String),
+    options: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+  }),
+  Schema.Struct({
+    _tag: Schema.Literal("Split"),
+    direction: Schema.Literals(["horizontal", "vertical"]),
+    before: Schema.suspend((): Schema.Codec<RexLayoutNode> => RexLayoutNode),
+    after: Schema.suspend((): Schema.Codec<RexLayoutNode> => RexLayoutNode),
+    ratio: Schema.optionalKey(Schema.Number),
+  }),
+]).annotate({ identifier: "RexLayoutNode" });
+
+/**
  * Builders for layout trees.
  *
  * @category constructors

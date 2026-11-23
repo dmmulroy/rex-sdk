@@ -48,20 +48,20 @@ See [examples/project-workspace.ts](examples/project-workspace.ts) for a fuller 
 
 ## Namespaces
 
-| Namespace   | Highlights                                                                                                                           |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `server`    | `status`, `version`, `whoami`, `reloadConfig`, `stop`, `tailscale.*`, `apple.*`                                                      |
-| `sessions`  | `list`, `create` (with typed layouts), `destroy`, `view`, `watchView`, `attach`, `bootstrap`                                         |
-| `windows`   | `create`, `close`, `focus`, `focusNext`, `move`, `setLabel`                                                                          |
-| `blocks`    | `split`, `splitBeside`, `move`, `swap`, `zoom`, `float`, `focus*`, `resize`, `close`, `sendEvent`, `callMethod`                      |
-| `layers`    | `create`, `close`, `raise`, `lower`, `resize`, `setState` (minimize or restore)                                                      |
-| `terminals` | `write`, `writeLine`, `read` (pages long output), `waitForExit`, `stream`, `readFile`, `downloadToFile`, `download`, `pasteFiles`, … |
-| `tunnels`   | `forwardLocal` (like `ssh -L`), `forwardRemote` (like `ssh -R`), `openStream`, `connections`, `createDial`, `info`                   |
-| `clients`   | `list`, `inspect`, `action`, `perform`, `key`, `keymap`, `servePerformRequests`, `serveCallRequests`                                 |
-| `events`    | `stream`, `waitFor`                                                                                                                  |
-| `targets`   | `resolve`, `complete`                                                                                                                |
-| `hosts`     | `list`, `put`, `remove`                                                                                                              |
-| `creators`  | `list`                                                                                                                               |
+| Namespace   | Highlights                                                                                                                                            |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server`    | `status`, `version`, `whoami`, `reloadConfig`, `stop`, `tailscale.*`, `apple.*`                                                                       |
+| `sessions`  | `list`, `create` (with typed layouts), `destroy`, `view`, `watchView`, `attach`, `bootstrap`                                                          |
+| `windows`   | `create`, `close`, `focus`, `focusNext`, `move`, `setLabel`                                                                                           |
+| `blocks`    | `split`, `splitBeside`, `move`, `swap`, `zoom`, `float`, `focus*`, `resize`, `close`, `sendEvent`, `callMethod`                                       |
+| `layers`    | `create`, `close`, `raise`, `lower`, `resize`, `setState` (minimize or restore)                                                                       |
+| `terminals` | `write`, `writeLine`, `read` (pages long output), `waitForOutput`, `waitForExit`, `stream`, `readFile`, `downloadToFile`, `download`, `pasteFiles`, … |
+| `tunnels`   | `forwardLocal` (like `ssh -L`), `forwardRemote` (like `ssh -R`), `openStream`, `connections`, `createDial`, `info`                                    |
+| `clients`   | `list`, `inspect`, `action`, `perform`, `key`, `keymap`, `servePerformRequests`, `serveCallRequests`                                                  |
+| `events`    | `stream`, `waitFor`                                                                                                                                   |
+| `targets`   | `resolve`, `complete`                                                                                                                                 |
+| `hosts`     | `list`, `put`, `remove`                                                                                                                               |
+| `creators`  | `list`                                                                                                                                                |
 
 Every operation's arguments are the documented method's arguments in camelCase, so
 `rex api describe <method>` documents them too.
@@ -96,6 +96,15 @@ Each failure is a tagged error, so you can recover with `Effect.catchTag`:
   first.
 - **Streams**: `RexEventsLost`, `RexDataRejected`, `RexBlockClosed`, `RexDataStreamFailed`.
 - **Contract**: `RexInvalidResponse`, when the server's answer doesn't match API revision 18.
+
+## pi extension
+
+The [`pi/`](pi/README.md) directory is a [pi](https://pi.dev) extension that gives codemode
+scripts one tool per SDK operation (`rex_terminals_writeLine`, `rex_sessions_view`, …):
+
+```sh
+pi install git:github.com/dmmulroy/rex-sdk
+```
 
 ## Development
 

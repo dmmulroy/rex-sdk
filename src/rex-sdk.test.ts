@@ -2,7 +2,7 @@ import { Effect, Exit, Fiber, Option, Schema, Stream } from "effect";
 import { describe, expect, test } from "vite-plus/test";
 import { defaultRexSocketPath, parseRexServerAddress } from "./rex-config.ts";
 import { BlockId, SessionId, WindowId } from "./rex-domain.ts";
-import { rexLayout } from "./rex-layout.ts";
+import { RexLayoutNode, rexLayout } from "./rex-layout.ts";
 import { RexClientRequestFailure } from "./client-service.ts";
 import { RexSdk } from "./rex-sdk.ts";
 import type { RexMethodInput } from "./rex-operation.ts";
@@ -483,6 +483,62 @@ describe("terminals", () => {
       }),
     ));
 
+  test("waitForOutput reads until a line matches and returns the bottom-most match", () =>
+    runRexSdkTest((server) =>
+      Effect.gen(function* () {
+        handleAttach(server);
+        const screens = ["$ make test\nbuilding\n\n", "$ make test\nok 1\nTESTS 3 passed\n$ \n\n"];
+        server.handle("com.superlogical.terminal.format", () =>
+          Effect.sync(() => ({
+            content: screens.length > 1 ? (screens.shift() ?? "") : (screens[0] ?? ""),
+          })),
+        );
+        const rex = yield* RexSdk;
+        const found = yield* rex.terminals.waitForOutput(target, /TESTS (\d+) (passed|failed)/g, {
+          interval: "10 millis",
+          timeout: "2 seconds",
+        });
+        expect(found).toEqual({
+          line: "TESTS 3 passed",
+          text: "TESTS 3 passed",
+          groups: ["3", "passed"],
+        });
+        expect(server.requestsFor("com.superlogical.terminal.format")[0]?.payload).toEqual({
+          session_id: sessionId,
+          block_id: blockId,
+          args: { trim: true, unwrap: true, max_bytes: 524_288 },
+        });
+      }),
+    ));
+
+  test("waitForOutput searches only the last lines and fails with RexRequestTimeout", () =>
+    runRexSdkTest((server) =>
+      Effect.gen(function* () {
+        handleAttach(server);
+        server.handle("com.superlogical.terminal.format", () =>
+          Effect.succeed({ content: "DONE\nworking\n$ \n" }),
+        );
+        const rex = yield* RexSdk;
+        const exit = yield* Effect.exit(
+          rex.terminals.waitForOutput(target, "DONE", {
+            lines: 2,
+            interval: "10 millis",
+            timeout: "100 millis",
+          }),
+        );
+        expect(failureTags(exit)).toEqual(["RexRequestTimeout"]);
+        const invalid = yield* Effect.exit(
+          rex.terminals.waitForOutput(target, "DONE", { lines: 0 }),
+        );
+        expect(failureTags(invalid)).toEqual(["RexInvalidInput"]);
+        expect(yield* rex.terminals.waitForOutput(target, "DONE", { lines: 3 })).toEqual({
+          line: "DONE",
+          text: "DONE",
+          groups: [],
+        });
+      }),
+    ));
+
   test("waitForExit returns at once when the program already exited", () =>
     runRexSdkTest((server) =>
       Effect.gen(function* () {
@@ -883,4 +939,24 @@ describe("configuration", () => {
         expect(failureTags(label)).toEqual(["RexConfigurationError"]);
       }),
     ));
+});
+
+describe("layout schema", () => {
+  test("decodes a layout given as data into the tree the builders make", () => {
+    const decoded = Schema.decodeUnknownSync(RexLayoutNode)({
+      _tag: "Split",
+      direction: "horizontal",
+      before: { _tag: "Terminal", label: "Code", options: { cwd: "/src", command: ["vim"] } },
+      after: { _tag: "Block", flavor: "com.example.notes" },
+      ratio: 0.6,
+    });
+    expect(decoded).toEqual(
+      rexLayout.horizontal(
+        { _tag: "Terminal", label: "Code", options: { cwd: "/src", command: ["vim"] } },
+        rexLayout.block("com.example.notes"),
+        0.6,
+      ),
+    );
+    expect(() => Schema.decodeUnknownSync(RexLayoutNode)({ _tag: "Split" })).toThrow();
+  });
 });
