@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "traits": {
+      "command": "pnpm",
+      "args": ["exec", "traits"],
+      "exposure": "direct",
+      "timeout": 300,
+      "description": "Derive project coding traits and check changed files against them."
+    },
+    "reflection": {
+      "command": "pnpm",
+      "args": ["exec", "traits", "reflection"],
+      "exposure": "direct",
+      "description": "Query local Traits OTLP telemetry with SQL."
+    }
+  }
+}

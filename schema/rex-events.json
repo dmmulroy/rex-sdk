@@ -1,0 +1,935 @@
+{
+  "$comment": "Hand-transcribed from the Event Reference in docs/research/rex-api-revision-18.md (API revision 18). The server publishes no JSON Schema for these events.",
+  "api_revision": 18,
+  "$defs": {
+    "principal": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "How the server identified the client: peer, windows_peer, tailscale, or anonymous."
+        },
+        "transport": {
+          "type": "string",
+          "description": "How the client first reached Rex: unix, named_pipe, tcp, or tailscale."
+        },
+        "display": {
+          "type": "string",
+          "description": "A readable name for the client, such as uid 501."
+        },
+        "remote_addr": {
+          "type": "string",
+          "description": "The client's network address. Left out on a Unix socket."
+        },
+        "uid": {
+          "type": [
+            "null",
+            "integer"
+          ],
+          "description": "The client's Unix user ID. Only for kind peer."
+        },
+        "gid": {
+          "type": [
+            "null",
+            "integer"
+          ],
+          "description": "The client's Unix group ID. Only for kind peer."
+        },
+        "pid": {
+          "type": [
+            "null",
+            "integer"
+          ],
+          "description": "The client's process ID when it connected, if known."
+        },
+        "sid": {
+          "type": "string",
+          "description": "The client's Windows security identifier. Only for kind windows_peer."
+        },
+        "user_id": {
+          "type": "string",
+          "description": "The Tailscale user ID that owns the client's device. Only for kind tailscale."
+        },
+        "login_name": {
+          "type": "string",
+          "description": "The client's Tailscale login name. For display only."
+        },
+        "node": {
+          "type": "string",
+          "description": "The name of the client's Tailscale device. Only for kind tailscale."
+        },
+        "tags": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "The Tailscale tags of the client's device."
+        },
+        "path": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "The route the client took to this server, for troubleshooting."
+        }
+      },
+      "required": [
+        "kind",
+        "transport",
+        "display"
+      ],
+      "additionalProperties": false,
+      "description": "Who a client is, as the server identified it when it accepted the connection."
+    },
+    "client_info": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "What sort of program the client is: app, cli, agent, or other."
+        },
+        "platform": {
+          "type": "string",
+          "description": "What the client runs on: macos, ios, linux, windows, freebsd, web, or other."
+        },
+        "name": {
+          "type": "string",
+          "description": "The program's name, such as Rex.app or rex. If it is longer than 256 bytes, the server keeps only the first 256."
+        },
+        "version": {
+          "type": "string",
+          "description": "The program's version, as the program prints it, such as 1.6.0. If it is longer than 256 bytes, the server keeps only the first 256."
+        },
+        "label": {
+          "type": "string",
+          "description": "The client's label, such as studio."
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "description": "What a client says about itself, for showing to people."
+    },
+    "client": {
+      "type": "object",
+      "properties": {
+        "client_id": {
+          "type": "string",
+          "description": "The client's ID. It stays the same when the client reconnects."
+        },
+        "info": {
+          "$ref": "#/$defs/client_info",
+          "description": "What the client says about itself. Left out if it said nothing."
+        },
+        "principal": {
+          "$ref": "#/$defs/principal"
+        },
+        "connected_at": {
+          "type": "string",
+          "description": "When the client first connected, as an RFC 3339 timestamp."
+        },
+        "connection_state": {
+          "type": "string",
+          "description": "connected, or lost if it dropped and the client may still reconnect."
+        },
+        "connection_lost_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When the server noticed the connection drop. Set only while connection_state is lost."
+        },
+        "session_ids": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "The sessions the client attached to, sorted by ID."
+        }
+      },
+      "required": [
+        "client_id",
+        "principal",
+        "connected_at"
+      ],
+      "additionalProperties": false,
+      "description": "A connected client."
+    },
+    "requester": {
+      "type": "object",
+      "properties": {
+        "client_id": {
+          "type": "string",
+          "description": "The client's ID."
+        },
+        "info": {
+          "$ref": "#/$defs/client_info",
+          "description": "What that client says about itself. Left out if it said nothing."
+        },
+        "principal": {
+          "$ref": "#/$defs/principal"
+        }
+      },
+      "required": [
+        "client_id",
+        "principal"
+      ],
+      "additionalProperties": false,
+      "description": "The client that sent a request; filled in by the server so it can't be faked."
+    }
+  },
+  "server_events": {
+    "client_call_requested": {
+      "type": "object",
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "description": "The ID to send back to client.reply."
+        },
+        "server": {
+          "type": "string",
+          "description": "The server to call, by the id the client gave it in client.action."
+        },
+        "method": {
+          "type": "string",
+          "description": "The method to call."
+        },
+        "args": {
+          "description": "The method's arguments. Left out when there are none."
+        }
+      },
+      "required": [
+        "call_id",
+        "server",
+        "method"
+      ],
+      "additionalProperties": false,
+      "description": "Asks this client to call a method on another server for an action it started."
+    },
+    "client_changed": {
+      "type": "object",
+      "properties": {
+        "client": {
+          "$ref": "#/$defs/client"
+        }
+      },
+      "required": [
+        "client"
+      ],
+      "additionalProperties": false,
+      "description": "A client changed its label or actions, or reconnected with different details."
+    },
+    "client_joined": {
+      "type": "object",
+      "properties": {
+        "client": {
+          "$ref": "#/$defs/client"
+        }
+      },
+      "required": [
+        "client"
+      ],
+      "additionalProperties": false,
+      "description": "A new client connected to the server."
+    },
+    "client_left": {
+      "type": "object",
+      "properties": {
+        "client_id": {
+          "type": "string",
+          "description": "The client that left."
+        }
+      },
+      "required": [
+        "client_id"
+      ],
+      "additionalProperties": false,
+      "description": "A client left the server."
+    },
+    "client_perform_requested": {
+      "type": "object",
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "description": "The ID to send back to client.reply."
+        },
+        "action": {
+          "type": "string",
+          "description": "The name of the action to perform."
+        },
+        "args": {
+          "description": "The action's arguments. Left out if the request had none."
+        },
+        "origin": {
+          "type": "string",
+          "description": "What caused the request, such as key or cli. Empty means api."
+        },
+        "session_id": {
+          "type": "string",
+          "description": "The session the action applies to, if the request named one. Unchecked."
+        },
+        "block_id": {
+          "type": "string",
+          "description": "The block the action applies to, if the request named one. Unchecked."
+        },
+        "requester": {
+          "$ref": "#/$defs/requester"
+        }
+      },
+      "required": [
+        "call_id",
+        "action",
+        "requester"
+      ],
+      "additionalProperties": false,
+      "description": "Asks this client to perform one of its actions for a client.perform call."
+    },
+    "client_performed": {
+      "type": "object",
+      "properties": {
+        "client_id": {
+          "type": "string",
+          "description": "The client that was asked."
+        },
+        "action": {
+          "type": "string",
+          "description": "The action the request asked for."
+        },
+        "requester": {
+          "$ref": "#/$defs/requester"
+        },
+        "outcome": {
+          "type": "string",
+          "description": "performed, refused, failed, or timeout."
+        },
+        "error": {
+          "type": [
+            "null",
+            "object"
+          ],
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false,
+          "description": "Why the action wasn't performed."
+        }
+      },
+      "required": [
+        "client_id",
+        "action",
+        "requester",
+        "outcome"
+      ],
+      "additionalProperties": false,
+      "description": "A client.perform call to an existing client ended."
+    },
+    "client_prompt_ended": {
+      "type": "object",
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "description": "The call_id of the client_prompt_requested event whose prompt ended."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why the prompt ended: answered if another client answered or cancelled it, timeout if its timeout passed, or cancelled if the action stopped waiting. Close the prompt for any reason, including one you don't know."
+        }
+      },
+      "required": [
+        "call_id",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "description": "Sent when a prompt that this client is showing ends without this client's answer, such as when another client answers it or its timeout passes. Close the prompt with this call_id, whatever the reason. A later client.reply for it fails with not_found."
+    },
+    "client_prompt_requested": {
+      "type": "object",
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "description": "The ID to send back to client.reply. A connection never reuses one. Each client that shows the same prompt receives its own."
+        },
+        "action": {
+          "type": "string",
+          "description": "The name of the action that asks, as rex.action defined it. Show it, or the title client.keymap lists for it, so the person knows what the question is for. Left out when unknown."
+        },
+        "prompt": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "description": "What the prompt asks for: input for a line of text, or pick for a choice from items. Answer not_supported for a kind you don't know."
+            },
+            "title": {
+              "type": "string",
+              "description": "A short name for the question, such as Branch name. Show it where the person can see what is being asked."
+            },
+            "placeholder": {
+              "type": "string",
+              "description": "The hint to show in the text field while it is empty."
+            },
+            "value": {
+              "type": "string",
+              "description": "The text the field starts with, for the person to edit."
+            },
+            "confirm": {
+              "type": "string",
+              "description": "The label of the control that submits the answer, such as Stage. Left out when the client should choose one."
+            },
+            "multiple": {
+              "type": "boolean",
+              "description": "True when the person may choose any number of items, including none. Only for pick."
+            },
+            "allow_other": {
+              "type": "boolean",
+              "description": "True when the person may answer with typed text instead of an item. Only for pick without multiple."
+            },
+            "items": {
+              "type": [
+                "null",
+                "array"
+              ],
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Identifies the item in the answer. Unique within the prompt."
+                  },
+                  "title": {
+                    "type": "string",
+                    "description": "The item's main text."
+                  },
+                  "subtitle": {
+                    "type": "string",
+                    "description": "A second, quieter line of text."
+                  },
+                  "icon": {
+                    "type": "string",
+                    "description": "A picture for the item, by name: document, folder, branch, terminal, code, server, database, package, globe, link, person, tag, clock, star, gear or plus. Show a generic picture for a name you don't know."
+                  },
+                  "detail": {
+                    "type": "string",
+                    "description": "Short text for the far end of the row, such as a file's status."
+                  },
+                  "selected": {
+                    "type": "boolean",
+                    "description": "True when the item starts out chosen. Only with multiple."
+                  }
+                },
+                "required": [
+                  "id",
+                  "title"
+                ],
+                "additionalProperties": false
+              },
+              "description": "The choices, in the order to show them. Only for pick."
+            }
+          },
+          "required": [
+            "kind",
+            "title"
+          ],
+          "additionalProperties": false,
+          "description": "The question to show."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "How long the server waits for the answer, in milliseconds from when it sent the event. Stop showing the prompt after that."
+        }
+      },
+      "required": [
+        "call_id",
+        "prompt",
+        "timeout_ms"
+      ],
+      "additionalProperties": false,
+      "description": "Sent to ask the client to put a question to the person using it, for an action from the configuration file that called rex.ui. Every connected app that can show the prompt receives it, and the first answer wins. Show the prompt, then answer with client.reply and the same call_id once the person answers or closes it. If client_prompt_ended arrives for the call_id first, close the prompt without answering."
+    },
+    "client_script_events_dropped": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "The session whose events the scripts missed."
+        },
+        "client_id": {
+          "type": "string",
+          "description": "The client whose scripts fell behind."
+        },
+        "event_name": {
+          "type": "string",
+          "description": "The first event the scripts missed."
+        }
+      },
+      "required": [
+        "session_id",
+        "client_id",
+        "event_name"
+      ],
+      "additionalProperties": false,
+      "description": "A client's Lua scripts fell behind and missed events."
+    },
+    "event_dropped": {
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "type": "string",
+          "description": "The type of the dropped event, such as hosts_changed. If the event was about one session, this is the type of the event inside session_event, such as block_event."
+        },
+        "session_id": {
+          "type": "string",
+          "description": "The session the dropped event was about. Left out for an event about the whole server."
+        },
+        "block_id": {
+          "type": "string",
+          "description": "For a dropped block_event, the block that sent it."
+        },
+        "creator_name": {
+          "type": "string",
+          "description": "For a dropped block_event, the creator that made the block."
+        },
+        "block_event_name": {
+          "type": "string",
+          "description": "For a dropped block_event, the event's name, as the block's creator lists it."
+        },
+        "size": {
+          "type": "integer",
+          "description": "The size of the dropped event in bytes, not counting the control message around it."
+        }
+      },
+      "required": [
+        "event_type",
+        "size"
+      ],
+      "additionalProperties": false,
+      "description": "Sent in place of an event that was too large to send, with the sequence number that event would have had. Fetch again whatever the dropped event would have changed: the session named by session_id, or if there is none, the server-wide state that event_type is about."
+    },
+    "hosts_changed": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string",
+          "description": "Identifies the new host list."
+        }
+      },
+      "required": [
+        "hash"
+      ],
+      "additionalProperties": false,
+      "description": "The server's host list changed."
+    },
+    "keymap_changed": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "type": "integer",
+          "description": "How many times the server has loaded its configuration file."
+        },
+        "hash": {
+          "type": "string",
+          "description": "The hash of the configuration file just loaded."
+        }
+      },
+      "required": [
+        "generation",
+        "hash"
+      ],
+      "additionalProperties": false,
+      "description": "The configuration file was loaded again."
+    },
+    "session_created": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "label"
+          ],
+          "additionalProperties": false,
+          "description": "The new session, as session.list reports it."
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "additionalProperties": false,
+      "description": "A session was created."
+    },
+    "session_destroyed": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "The session that was destroyed."
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "additionalProperties": false,
+      "description": "A session was destroyed."
+    },
+    "session_moved": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "The session that moved."
+        },
+        "before_session_id": {
+          "type": "string",
+          "description": "The session that now comes directly after it. Left out when it is now last."
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "additionalProperties": false,
+      "description": "A session moved in the session.list order."
+    },
+    "tailscale_status_changed": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "description": "disabled, starting, needs_login, needs_machine_approval, or running."
+        },
+        "dns_name": {
+          "type": "string"
+        },
+        "auth_url": {
+          "type": "string"
+        },
+        "account": {
+          "type": "object",
+          "properties": {
+            "login_name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "login_name"
+          ],
+          "additionalProperties": false
+        },
+        "tailnet_name": {
+          "type": "string"
+        },
+        "allow_tailnet_members": {
+          "type": "boolean"
+        },
+        "tags": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "https": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "description": "pending or available."
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "additionalProperties": false
+        },
+        "control_url": {
+          "type": "string",
+          "description": "The control server the device uses, such as a Headscale server. Left out for Tailscale's own, while built-in Tailscale is off, and by older servers."
+        }
+      },
+      "required": [
+        "state",
+        "allow_tailnet_members"
+      ],
+      "additionalProperties": false,
+      "description": "The server's Tailscale status changed."
+    }
+  },
+  "session_events": {
+    "active_window_changed": {
+      "type": "object",
+      "properties": {
+        "window_id": {
+          "type": "string",
+          "description": "The new active window. Left out when the session has no windows."
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "description": "The session's active window changed."
+    },
+    "block_closed": {
+      "type": "object",
+      "properties": {
+        "block_id": {
+          "type": "string",
+          "description": "The block that closed."
+        }
+      },
+      "required": [
+        "block_id"
+      ],
+      "additionalProperties": false,
+      "description": "A block closed and left the session."
+    },
+    "block_created": {
+      "type": "object",
+      "properties": {
+        "block_id": {
+          "type": "string",
+          "description": "The new block's ID."
+        }
+      },
+      "required": [
+        "block_id"
+      ],
+      "additionalProperties": false,
+      "description": "A block joined the session."
+    },
+    "block_event": {
+      "type": "object",
+      "properties": {
+        "block_id": {
+          "type": "string",
+          "description": "The block that sent the event."
+        },
+        "creator_name": {
+          "type": "string",
+          "description": "The creator that made the block."
+        },
+        "name": {
+          "type": "string",
+          "description": "The event's name, as the creator lists it."
+        },
+        "payload": {
+          "description": "The event's fields, in the shape the creator lists for it."
+        }
+      },
+      "required": [
+        "block_id",
+        "name"
+      ],
+      "additionalProperties": false,
+      "description": "A block sent one of its creator's events."
+    },
+    "block_owner_changed": {
+      "type": "object",
+      "properties": {
+        "block_id": {
+          "type": "string",
+          "description": "The block whose owner changed."
+        },
+        "owner": {
+          "type": "string",
+          "description": "The client that owns the block now."
+        },
+        "previous": {
+          "type": "string",
+          "description": "The client that owned the block before."
+        },
+        "reason": {
+          "type": "string",
+          "description": "create, take, request, disown, lost, disconnect, or restore."
+        }
+      },
+      "required": [
+        "block_id"
+      ],
+      "additionalProperties": false,
+      "description": "A block's owner changed."
+    },
+    "client_connected": {
+      "type": "object",
+      "properties": {
+        "client_id": {
+          "type": "string"
+        },
+        "principal": {
+          "$ref": "#/$defs/principal"
+        },
+        "connected_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_id",
+        "principal",
+        "connected_at"
+      ],
+      "additionalProperties": false,
+      "description": "A client attached to the session."
+    },
+    "client_connection_changed": {
+      "type": "object",
+      "properties": {
+        "client_id": {
+          "type": "string"
+        },
+        "principal": {
+          "$ref": "#/$defs/principal"
+        },
+        "connection_state": {
+          "type": "string",
+          "description": "connected or lost."
+        },
+        "connection_lost_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "client_id",
+        "principal",
+        "connection_state"
+      ],
+      "additionalProperties": false,
+      "description": "An attached client's connection dropped or came back."
+    },
+    "client_disconnected": {
+      "type": "object",
+      "properties": {
+        "client_id": {
+          "type": "string"
+        },
+        "principal": {
+          "$ref": "#/$defs/principal"
+        }
+      },
+      "required": [
+        "client_id",
+        "principal"
+      ],
+      "additionalProperties": false,
+      "description": "A client detached from the session."
+    },
+    "creator_changed": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false,
+      "description": "The creators available in the session changed."
+    },
+    "session_label_changed": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "The session's new label."
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "additionalProperties": false,
+      "description": "The session's label changed."
+    },
+    "session_view_changed": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "description": "The session's revision after the change."
+        }
+      },
+      "required": [
+        "revision"
+      ],
+      "additionalProperties": false,
+      "description": "Something session.view reports changed."
+    },
+    "window_closed": {
+      "type": "object",
+      "properties": {
+        "window_id": {
+          "type": "string",
+          "description": "The window that closed."
+        }
+      },
+      "required": [
+        "window_id"
+      ],
+      "additionalProperties": false,
+      "description": "A window left the session."
+    },
+    "window_created": {
+      "type": "object",
+      "properties": {
+        "window_id": {
+          "type": "string",
+          "description": "The new window's ID."
+        },
+        "label": {
+          "type": "string",
+          "description": "The new window's label."
+        }
+      },
+      "required": [
+        "window_id",
+        "label"
+      ],
+      "additionalProperties": false,
+      "description": "A window was added to the session."
+    },
+    "window_label_changed": {
+      "type": "object",
+      "properties": {
+        "window_id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string",
+          "description": "The window's new label."
+        }
+      },
+      "required": [
+        "window_id",
+        "label"
+      ],
+      "additionalProperties": false,
+      "description": "A window's label changed."
+    }
+  }
+}

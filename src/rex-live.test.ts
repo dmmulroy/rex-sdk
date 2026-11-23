@@ -1,0 +1,408 @@
+/**
+ * Opt-in contract checks against a real Rex server: `REX_SDK_LIVE=1 vp test run src/rex-live.test.ts`.
+ *
+ * The suite creates its own session, labelled `rex-sdk-live-…`, and destroys it when it ends.
+ * It never reads or changes other sessions. Every result is decoded with the generated codecs,
+ * so a server whose answers drift from the snapshot fails here with `RexInvalidResponse`.
+ * Set `REX_SDK_LIVE_SERVER` to use a server other than the default personal server.
+ */
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, connect } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { NodeFileSystem } from "@effect/platform-node";
+import { Chunk, Effect, Fiber, Layer, Option, Stream } from "effect";
+import { describe, expect, test } from "vite-plus/test";
+import { REX_API_REVISION } from "./rex-config.ts";
+import type { BlockId, SessionId } from "./rex-domain.ts";
+import type { RexSessionEvent } from "./rex-events.ts";
+import { rexLayout } from "./rex-layout.ts";
+import { RexSdk, rexSdkLayerFromOptions, type IRexSdk } from "./rex-sdk.ts";
+
+const live = process.env["REX_SDK_LIVE"] === "1";
+/** The file transfer and forward tests share file paths and ports with the server: local only. */
+const serverIsLocal = process.env["REX_SDK_LIVE_SERVER"] === undefined;
+
+function runLive<A, E>(
+  body: (rex: IRexSdk, sessionId: SessionId, shellBlockId: BlockId) => Effect.Effect<A, E>,
+) {
+  const layer: Layer.Layer<RexSdk, unknown> = rexSdkLayerFromOptions({
+    ...(process.env["REX_SDK_LIVE_SERVER"] === undefined
+      ? {}
+      : { server: process.env["REX_SDK_LIVE_SERVER"] }),
+    client: { kind: "agent", name: "rex-sdk-live-test", version: "0.0.0" },
+  });
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const rex = yield* RexSdk;
+        const created = yield* Effect.acquireRelease(
+          rex.sessions.create({
+            label: `rex-sdk-live-${Date.now().toString(36)}`,
+            initialWindows: [
+              {
+                windowLabel: "main",
+                layout: rexLayout.terminal({
+                  shell: "none",
+                  command: ["/bin/sh", "-c", "printf 'rex-sdk-ready\\n'; exec cat"],
+                  label: "echo",
+                }),
+              },
+            ],
+          }),
+          (session) => Effect.ignore(rex.sessions.destroy({ sessionId: session.sessionId })),
+        );
+        const shellBlockId = created.initialWindows[0]?.blockIds[0];
+        if (shellBlockId === undefined)
+          return yield* Effect.die("session.create returned no block");
+        return yield* body(rex, created.sessionId, shellBlockId);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+}
+
+const pollUntil = <A, E>(effect: Effect.Effect<A, E>, predicate: (value: A) => boolean) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const value = yield* effect;
+      if (predicate(value)) return value;
+      yield* Effect.sleep("100 millis");
+    }
+    return yield* Effect.die("condition never held");
+  });
+
+describe.runIf(live)("live Rex server", () => {
+  test(
+    "tunnel blocks start detached and describe what they forward",
+    () =>
+      runLive((rex, sessionId) =>
+        Effect.gen(function* () {
+          const dial = yield* rex.tunnels.createDial({
+            sessionId,
+            label: "live-dial",
+            options: { host: "127.0.0.1", port: 9, clientAddress: "127.0.0.1:19" },
+          });
+          const dialInfo = yield* rex.tunnels.info({ sessionId, blockId: dial.blockId });
+          expect([dialInfo.flavor, dialInfo.target, dialInfo.clientAddress]).toEqual([
+            "dial",
+            Option.some("127.0.0.1:9"),
+            Option.some("127.0.0.1:19"),
+          ]);
+          const listen = yield* rex.tunnels.createListen({
+            sessionId,
+            options: { address: "127.0.0.1", port: 0 },
+          });
+          const listenInfo = yield* rex.tunnels.info({ sessionId, blockId: listen.blockId });
+          expect(listenInfo.flavor).toBe("listen");
+          expect(Option.getOrElse(listenInfo.address, () => "")).toMatch(/^127\.0\.0\.1:\d+$/);
+          yield* rex.blocks.close({ sessionId, blockId: dial.blockId });
+          yield* rex.blocks.close({ sessionId, blockId: listen.blockId });
+        }),
+      ),
+    30_000,
+  );
+
+  test(
+    "server, discovery, and listing operations decode",
+    () =>
+      runLive((rex, sessionId) =>
+        Effect.gen(function* () {
+          // `server.version` reports the newest revision the server speaks, not the one in use.
+          const version = yield* rex.server.version();
+          expect(Option.getOrElse(version.apiRevision, () => 0)).toBeGreaterThanOrEqual(
+            REX_API_REVISION,
+          );
+          yield* rex.server.status();
+          yield* rex.server.whoami();
+          yield* rex.hosts.list();
+          const creators = yield* rex.creators.list();
+          expect(creators.creators.map((creator) => creator.name)).toContain(
+            "com.superlogical.terminal",
+          );
+          const sessions = yield* rex.sessions.list();
+          expect(sessions.sessions.map((session) => session.sessionId)).toContain(sessionId);
+          yield* rex.clients.list({});
+          yield* rex.sessions.listClients({ sessionId });
+          yield* rex.sessions.listBlocks({ sessionId });
+          yield* rex.sessions.help({ sessionId });
+          const resolved = yield* rex.targets.resolve({ kinds: ["session"], queries: [sessionId] });
+          expect(resolved).toBeDefined();
+        }),
+      ),
+    30_000,
+  );
+
+  test(
+    "terminal operations type, read, and inspect a running program",
+    () =>
+      runLive((rex, sessionId, blockId) =>
+        Effect.gen(function* () {
+          const target = { sessionId, blockId };
+          yield* pollUntil(rex.terminals.read(target), (screen) =>
+            screen.includes("rex-sdk-ready"),
+          );
+          yield* rex.terminals.writeLine(target, "ping-from-sdk");
+          const screen = yield* pollUntil(
+            rex.terminals.read(target, { trim: true }),
+            (text) => text.split("ping-from-sdk").length >= 3,
+          );
+          expect(screen).toContain("ping-from-sdk");
+          const process = yield* rex.terminals.process(target);
+          expect(Option.isNone(process.lastExit)).toBe(true);
+          yield* rex.terminals.size(target);
+          yield* rex.terminals.title(target);
+          yield* rex.terminals.pwd(target);
+          yield* rex.terminals.modes(target);
+          yield* rex.terminals.inputMode(target);
+          yield* rex.terminals.programStatus(target);
+          yield* rex.terminals.listDir(target, { path: "/" });
+          const ports = yield* rex.terminals.ports(target);
+          expect(["ok", "partial", "unsupported"]).toContain(ports.status);
+          yield* rex.blocks.describe({ sessionId, blockId });
+        }),
+      ),
+    30_000,
+  );
+
+  test(
+    "layout operations split, label, zoom, float, and close blocks and windows",
+    () =>
+      runLive((rex, sessionId, blockId) =>
+        Effect.gen(function* () {
+          const split = yield* rex.blocks.splitBeside({
+            sessionId,
+            anchorId: blockId,
+            placement: "right",
+            ratio: 0.3,
+            layout: rexLayout.terminal({
+              shell: "none",
+              command: ["/bin/sh", "-c", "exec cat"],
+              label: "side",
+            }),
+          });
+          const sideBlockId = split.blockIds[0];
+          expect(sideBlockId).toBeDefined();
+          if (sideBlockId === undefined) return;
+          yield* rex.blocks.setLabel({ sessionId, blockId: sideBlockId, label: "renamed" });
+          yield* rex.blocks.zoom({ sessionId, blockId: sideBlockId, zoom: true });
+          yield* rex.blocks.zoom({ sessionId, blockId: sideBlockId, zoom: false });
+          yield* rex.blocks.swap({ sessionId, blockId, otherBlockId: sideBlockId });
+          yield* rex.blocks.focus({ sessionId, blockId });
+
+          const window = yield* rex.windows.create({
+            sessionId,
+            windowLabel: "second",
+            focus: false,
+            layout: rexLayout.vertical(rexLayout.terminal(), rexLayout.terminal(), 0.6),
+          });
+          expect(window.blockIds.length).toBe(2);
+          yield* rex.windows.setLabel({ sessionId, windowId: window.windowId, label: "renamed" });
+          const view = yield* rex.sessions.view({ sessionId });
+          expect(view.windows.map((current) => current.label)).toContainEqual(
+            Option.some("renamed"),
+          );
+
+          const layer = yield* rex.layers.create({
+            sessionId,
+            windowId: window.windowId,
+            bounds: [0.1, 0.1, 0.5, 0.5],
+            layout: rexLayout.terminal(),
+            focus: false,
+          });
+          yield* rex.layers.setState({ sessionId, layerId: layer.layerId, state: "minimized" });
+          const minimized = yield* rex.sessions.view({ sessionId });
+          const layerState = minimized.windows
+            .flatMap((current) => current.layers)
+            .find((current) => current.layerId === layer.layerId)?.state;
+          expect(layerState).toEqual(Option.some("minimized"));
+          yield* rex.layers.setState({
+            sessionId,
+            layerId: layer.layerId,
+            state: "normal",
+            focus: true,
+          });
+          yield* rex.layers.close({ sessionId, layerId: layer.layerId });
+          yield* rex.windows.close({ sessionId, windowId: window.windowId });
+          yield* rex.blocks.close({ sessionId, blockId: sideBlockId });
+        }),
+      ),
+    30_000,
+  );
+
+  test(
+    "waitForExit reports a program's exit code",
+    () =>
+      runLive((rex, sessionId, blockId) =>
+        Effect.gen(function* () {
+          const split = yield* rex.blocks.splitBeside({
+            sessionId,
+            anchorId: blockId,
+            placement: "below",
+            // Rex 0.0.1793047680 reports exit code 0 for this program when `shell` is "none",
+            // so the command runs through the login shell here.
+            layout: rexLayout.terminal({
+              command: ["/bin/sh", "-c", "sleep 0.5; exit 3"],
+              exit: { onCompletion: false },
+            }),
+          });
+          const exitBlockId = split.blockIds[0];
+          if (exitBlockId === undefined) return yield* Effect.die("no block");
+          const exit = yield* rex.terminals.waitForExit(
+            { sessionId, blockId: exitBlockId },
+            { timeout: "10 seconds" },
+          );
+          expect(exit.exitCode).toBe(3);
+        }),
+      ),
+    30_000,
+  );
+
+  test(
+    "events and output streams deliver live data",
+    () =>
+      runLive((rex, sessionId, blockId) =>
+        Effect.gen(function* () {
+          const target = { sessionId, blockId };
+          const items = yield* rex.terminals.stream(target).pipe(
+            Stream.takeUntil((item) => item._tag === "Message" && item.message.type === "resize"),
+            Stream.runCollect,
+            Effect.timeout("10 seconds"),
+          );
+          expect(
+            Chunk.toReadonlyArray(Chunk.fromIterable(items)).some(
+              (item) => item._tag === "Message",
+            ),
+          ).toBe(true);
+
+          const created = yield* Effect.forkChild(
+            rex.events.waitFor(
+              (event): event is RexSessionEvent =>
+                event._tag === "SessionEvent" &&
+                event.type === "window_created" &&
+                event.sessionId === sessionId,
+              { sessionIds: [sessionId], timeout: "10 seconds" },
+            ),
+          );
+          yield* Effect.sleep("200 millis");
+          yield* rex.windows.create({
+            sessionId,
+            windowLabel: "evented",
+            focus: false,
+            layout: rexLayout.terminal(),
+          });
+          const event = yield* Fiber.join(created);
+          expect(event._tag === "SessionEvent" && event.type).toBe("window_created");
+
+          const views = yield* rex.sessions
+            .watchView(sessionId)
+            .pipe(Stream.take(1), Stream.runCollect);
+          expect(Chunk.fromIterable(views).pipe(Chunk.size)).toBe(1);
+        }),
+      ),
+    30_000,
+  );
+
+  test.runIf(serverIsLocal)(
+    "downloads and pastes files through rex.data.bytes.v1",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "rex-sdk-live-"));
+      const original = new Uint8Array(randomBytes(200_000));
+      writeFileSync(join(directory, "source.bin"), original);
+      return runLive((rex, sessionId, blockId) =>
+        Effect.gen(function* () {
+          const target = { sessionId, blockId };
+          const contents = yield* rex.terminals.readFile(target, join(directory, "source.bin"));
+          expect(Buffer.from(contents.bytes).equals(Buffer.from(original))).toBe(true);
+          expect(contents.file.size).toBe(original.length);
+
+          const destination = join(directory, "copy.bin");
+          const written = yield* rex.terminals
+            .downloadToFile(target, join(directory, "source.bin"), destination)
+            .pipe(Effect.provide(NodeFileSystem.layer));
+          expect(written._tag).toBe("Downloaded");
+          expect(readFileSync(destination).equals(Buffer.from(original))).toBe(true);
+
+          yield* rex.terminals.pasteFiles(target, [
+            { name: "pasted.txt", data: "pasted by rex-sdk" },
+          ]);
+          // The terminal runs `cat`, so the typed path comes back on its screen.
+          // A long path wraps on screen, so match it with the lines joined.
+          const screen = yield* pollUntil(
+            rex.terminals
+              .read(target, { trim: true })
+              .pipe(Effect.map((text) => text.split("\n").join(""))),
+            (text) => text.includes("pasted.txt"),
+          );
+          const typed = screen
+            .match(/(\/\S*?(?:\\ \S*?)*pasted\.txt)/)?.[1]
+            ?.replaceAll("\\ ", " ");
+          expect(typed).toBeDefined();
+          expect(readFileSync(typed ?? "", "utf8")).toBe("pasted by rex-sdk");
+        }),
+      ).finally(() => rmSync(directory, { recursive: true, force: true }));
+    },
+    30_000,
+  );
+
+  test.runIf(serverIsLocal)(
+    "forwards connections both ways through tunnel blocks",
+    () =>
+      runLive((rex, sessionId) =>
+        Effect.gen(function* () {
+          const echo = yield* Effect.acquireRelease(
+            Effect.callback<{ readonly port: number; readonly close: () => void }>((resume) => {
+              const server = createServer({ allowHalfOpen: true }, (socket) => {
+                socket.on("data", (data) => socket.write(`echo:${data.toString()}`));
+                socket.on("end", () => socket.end());
+              });
+              server.listen(0, "127.0.0.1", () => {
+                const address = server.address();
+                resume(
+                  Effect.succeed({
+                    port: address !== null && typeof address === "object" ? address.port : 0,
+                    close: () => server.close(),
+                  }),
+                );
+              });
+            }),
+            (server) => Effect.sync(server.close),
+          );
+          const roundTrip = (address: string, message: string) =>
+            Effect.callback<string, Error>((resume) => {
+              const separator = address.lastIndexOf(":");
+              const socket = connect(
+                {
+                  host: address.slice(0, separator),
+                  port: Number(address.slice(separator + 1)),
+                  allowHalfOpen: true,
+                },
+                () => {
+                  socket.write(message);
+                  socket.end();
+                },
+              );
+              let received = "";
+              socket.on("data", (data) => {
+                received += data.toString();
+              });
+              socket.on("end", () => resume(Effect.succeed(received)));
+              socket.on("error", (error) => resume(Effect.fail(error)));
+            });
+
+          const local = yield* rex.tunnels.forwardLocal({
+            sessionId,
+            target: { host: "127.0.0.1", port: echo.port },
+          });
+          expect(yield* roundTrip(local.address, "through -L")).toBe("echo:through -L");
+
+          const remote = yield* rex.tunnels.forwardRemote({
+            sessionId,
+            target: { host: "127.0.0.1", port: echo.port },
+          });
+          expect(yield* roundTrip(remote.address, "through -R")).toBe("echo:through -R");
+        }).pipe(Effect.scoped),
+      ),
+    30_000,
+  );
+});

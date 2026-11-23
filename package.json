@@ -1,0 +1,57 @@
+{
+  "name": "rex-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Effect-native TypeScript SDK for the Rex server API.",
+  "license": "MIT",
+  "author": "Dillon Mulroy <dillon.mulroy@gmail.com>",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "generate": "node scripts/generate-wire-schemas.ts",
+    "check:generated": "node scripts/generate-wire-schemas.ts --check",
+    "fetch:rex-api": "node scripts/fetch-rex-api.ts",
+    "build": "vp pack",
+    "test:live": "REX_SDK_LIVE=1 vp test run src/rex-live.test.ts",
+    "ready": "vp run check:generated && vp check && vp test && vp pack",
+    "prepare": "vp config"
+  },
+  "dependencies": {
+    "effect": "4.1.0",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@effect/ai-openai": "4.1.0",
+    "@effect/ai-typesafe": "4.1.0",
+    "@effect/platform-node": "4.1.0",
+    "@types/node": "^26.6.5",
+    "@types/ws": "^8.18.2",
+    "ajv": "^8.20.0",
+    "traits": "^0.5.14",
+    "typescript": "~7.0.2",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.16.1",
+      "onFail": "download"
+    }
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "rex": {
+    "apiRevision": 18,
+    "serverVersion": "0.1.0-preview.21",
+    "serverCommit": "202b1b3fc0219883112258a8d0f9f95e2d47daa9"
+  }
+}
