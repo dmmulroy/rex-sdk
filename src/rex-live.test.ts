@@ -12,7 +12,7 @@ import { createServer, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Chunk, Effect, Fiber, Layer, Option, Stream } from "effect";
+import { Chunk, Effect, Exit, Fiber, Layer, Option, Stream } from "effect";
 import { describe, expect, test } from "vite-plus/test";
 import { REX_API_REVISION } from "./rex-config.ts";
 import type { BlockId, SessionId } from "./rex-domain.ts";
@@ -160,6 +160,46 @@ describe.runIf(live)("live Rex server", () => {
           const ports = yield* rex.terminals.ports(target);
           expect(["ok", "partial", "unsupported"]).toContain(ports.status);
           yield* rex.blocks.describe({ sessionId, blockId });
+        }),
+      ),
+    30_000,
+  );
+
+  test(
+    "waits match output after a mark, share one data connection, and see quiet",
+    () =>
+      runLive((rex, sessionId, blockId) =>
+        Effect.gen(function* () {
+          const target = { sessionId, blockId };
+          yield* rex.terminals.waitForOutput(target, /^rex-sdk-ready$/, { timeout: "10 seconds" });
+          const mark = yield* rex.terminals.mark(target);
+          // Output from before the mark never matches.
+          const stale = yield* Effect.exit(
+            rex.terminals.waitForOutput(
+              target,
+              { pattern: "rex-sdk-ready", since: mark },
+              { timeout: "500 millis" },
+            ),
+          );
+          expect(Exit.isFailure(stale)).toBe(true);
+          // Rex refuses a second data connection per block, so these must share one.
+          const [fresh, quiet] = yield* Effect.all(
+            [
+              rex.terminals.waitForOutput(
+                target,
+                { pattern: /^fresh-(\d+)$/, since: mark },
+                { timeout: "10 seconds" },
+              ),
+              rex.terminals.waitForQuiet(target, { quietFor: "500 millis", timeout: "10 seconds" }),
+              rex.terminals.writeLine(target, "fresh-42"),
+            ],
+            { concurrency: "unbounded" },
+          );
+          expect(fresh.groups).toEqual(["42"]);
+          expect(fresh.alignment).toEqual(Option.some("offset"));
+          expect(quiet).toBeUndefined();
+          const tail = yield* rex.terminals.readTail(target, { maxBytes: 4_096 });
+          expect(tail.lines).toContain("fresh-42");
         }),
       ),
     30_000,

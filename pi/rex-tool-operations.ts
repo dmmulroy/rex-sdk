@@ -29,6 +29,7 @@ import {
   type RexRequestOptions,
   type RexWireMethod,
 } from "../src/index.ts";
+import type { RexMarkStore } from "./rex-tool-marks.ts";
 
 /** One SDK operation exposed as the codemode tool `rex_<name>`. */
 export interface RexToolOperation {
@@ -50,6 +51,7 @@ export interface RexToolOperation {
     rex: IRexSdk,
     params: { readonly [key: string]: unknown },
     options: RexRequestOptions,
+    marks: RexMarkStore,
   ) => Effect.Effect<unknown, unknown>;
 }
 
@@ -84,6 +86,7 @@ function operation<const Fields extends Schema.Struct.Fields>(
       rex: IRexSdk,
       fields: Schema.Struct<Fields>["Type"],
       options: RexRequestOptions,
+      marks: RexMarkStore,
     ) => Effect.Effect<unknown, unknown>;
   },
 ): RexToolOperation {
@@ -96,8 +99,8 @@ function operation<const Fields extends Schema.Struct.Fields>(
     fields: spec.fields,
     input: undefined,
     output: spec.output,
-    program: (rex, params, options) =>
-      Effect.flatMap(decodeFields(params), (fields) => spec.run(rex, fields, options)),
+    program: (rex, params, options, marks) =>
+      Effect.flatMap(decodeFields(params), (fields) => spec.run(rex, fields, options, marks)),
   };
 }
 
@@ -270,7 +273,23 @@ const OutputMatch = Schema.Struct({
   line: Schema.String,
   text: Schema.String,
   groups: Schema.Array(Schema.NullOr(Schema.String)),
+  alignment: Schema.NullOr(Schema.Literals(["offset", "anchor", "unaligned"])).annotate({
+    description:
+      "How `since` was found: offset or anchor (exact), unaligned (the output was cleared or scrolled past the mark, so every line counted); null without `since`.",
+  }),
 });
+
+const MarkResult = Schema.Struct({ markId: Schema.String });
+
+/** The script's regex does not compile. */
+class RexInvalidPattern extends Error {
+  readonly _tag = "RexInvalidPattern";
+
+  constructor(reason: string) {
+    super(reason);
+    this.name = "RexInvalidPattern";
+  }
+}
 
 const OutputPattern = Schema.Struct({
   type: Schema.Literals(["substring", "regex"]),
@@ -378,43 +397,106 @@ export const rexToolOperations: readonly RexToolOperation[] = [
   operation({
     name: "terminals_writeLine",
     description:
-      "Type a line of text into a terminal and press Return, such as a shell command. Then use rex_terminals_waitForOutput or rex_terminals_waitForExit.",
+      "Type a line of text into a terminal and press Return, such as a shell command. Returns a markId taken just before typing: pass it as `since` to rex_terminals_waitForOutput to match only what the command prints.",
     fields: { ...blockTarget, text: Schema.String },
-    output: "void",
-    run: (rex, { text, ...target }, options) => rex.terminals.writeLine(target, text, options),
+    output: MarkResult,
+    run: (rex, { text, ...target }, options, marks) =>
+      Effect.gen(function* () {
+        const mark = yield* rex.terminals.mark(target, options);
+        yield* rex.terminals.writeLine(target, text, options);
+        return { markId: marks.put(target, mark) };
+      }),
   }),
   operation({
     name: "terminals_waitForOutput",
     description:
-      "Wait until a line of the terminal's screen or scrollback matches a substring or regex; `match` has the line, the matched text, and capture groups. Output already on screen counts: match text only the new output prints, or limit `lines`.",
+      "Wait until a line of a terminal's output matches a substring or regex; `match` has the line, the matched text, capture groups, and how `since` was found. With `since` (a markId from rex_terminals_writeLine or rex_terminals_mark) only output printed after it counts; without it, output already on screen matches at once. Rejects with RexTerminalExited if the program exits first.",
     fields: {
       ...blockTarget,
       match: OutputPattern,
+      since: Schema.optionalKey(
+        Schema.String.annotate({
+          description: "A markId; only lines printed after the mark count.",
+        }),
+      ),
       lines: Schema.optionalKey(
         Schema.Int.check(Schema.isGreaterThan(0)).annotate({
-          description: "Search only the last `lines` lines.",
+          description: "Search only the last `lines` lines (after `since`, when given).",
         }),
       ),
       ...waitTimeout,
     },
     output: waitOutcomeSchema("match", OutputMatch),
-    run: (rex, { match, lines, timeoutMs, ...target }) =>
+    run: (rex, { match, since, lines, timeoutMs, ...target }, _options, marks) =>
       waitOutcome(
         "match",
         "TerminalService.waitForOutput",
-        Effect.try({
-          try: () =>
-            match.type === "substring" ? match.value : new RegExp(match.value, match.flags ?? ""),
-          catch: (cause) => new Error(`invalid regex: ${String(cause)}`),
-        }).pipe(
-          Effect.flatMap((pattern) =>
-            rex.terminals.waitForOutput(target, pattern, {
-              timeout: `${timeoutMs} millis`,
-              ...(lines === undefined ? {} : { lines }),
-            }),
-          ),
+        Effect.gen(function* () {
+          const pattern = yield* Effect.try({
+            try: () =>
+              match.type === "substring" ? match.value : new RegExp(match.value, match.flags ?? ""),
+            catch: (cause) => new RexInvalidPattern(String(cause)),
+          });
+          const mark = since === undefined ? undefined : yield* marks.get(since, target);
+          return yield* rex.terminals.waitForOutput(
+            target,
+            { pattern, since: mark, lines },
+            { timeout: `${timeoutMs} millis` },
+          );
+        }),
+      ),
+  }),
+  operation({
+    name: "terminals_mark",
+    readOnly: true,
+    description:
+      "Mark the current end of a terminal's output and return its markId, for `since` in rex_terminals_waitForOutput. rex_terminals_writeLine makes one for you.",
+    fields: blockTarget,
+    output: MarkResult,
+    run: (rex, target, options, marks) =>
+      Effect.map(rex.terminals.mark(target, options), (mark) => ({
+        markId: marks.put(target, mark),
+      })),
+  }),
+  operation({
+    name: "terminals_waitForQuiet",
+    readOnly: true,
+    description:
+      "Wait until a terminal's program has printed nothing for quietForMs, or has exited: for output with no line to match, such as a full-screen program settling.",
+    fields: {
+      ...blockTarget,
+      quietForMs: Schema.Finite.check(Schema.isGreaterThan(0)),
+      ...waitTimeout,
+    },
+    output: waitOutcomeSchema("quiet", Schema.Literal(true)),
+    run: (rex, { quietForMs, timeoutMs, ...target }) =>
+      waitOutcome(
+        "quiet",
+        "TerminalService.waitForQuiet",
+        Effect.as(
+          rex.terminals.waitForQuiet(target, {
+            quietFor: `${quietForMs} millis`,
+            timeout: `${timeoutMs} millis`,
+          }),
+          true,
         ),
       ),
+  }),
+  operation({
+    name: "terminals_readTail",
+    readOnly: true,
+    description:
+      "Read the last lines of a terminal's output, cheaply even when the scrollback is long; maxBytes (default 65536) bounds how much.",
+    fields: {
+      ...blockTarget,
+      maxBytes: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
+    },
+    output: Schema.Struct({ lines: Schema.Array(Schema.String), truncated: Schema.Boolean }),
+    run: (rex, { maxBytes, ...target }, options) =>
+      Effect.map(rex.terminals.readTail(target, { maxBytes }, options), ({ lines, truncated }) => ({
+        lines,
+        truncated,
+      })),
   }),
   operation({
     name: "terminals_waitForExit",
@@ -1159,6 +1241,8 @@ export const rexToolExclusions: Readonly<Record<string, string>> = {
   "sessions.bootstrap": "starts a client connection, which only app clients need",
   "sessions.watchView": "a stream; read rex_sessions_view again instead",
   "terminals.stream": "a stream; use rex_terminals_waitForOutput and rex_terminals_read",
+  "terminals.activity": "a stream; use rex_terminals_waitForOutput or rex_terminals_waitForQuiet",
+  "terminals.watch": "a stream; use rex_terminals_waitForOutput",
   "terminals.download": "a scoped byte stream; use rex_terminals_readFile",
   "terminals.downloadToFile": "needs a local file system service; use rex_terminals_readFile",
   "tunnels.openStream": "a scoped byte stream",

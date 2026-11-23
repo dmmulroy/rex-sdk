@@ -7,7 +7,7 @@
  *
  * @since 0.1.0
  */
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 
 /**
  * Failure to resolve SDK configuration, such as an unusable `REX_SERVER` value.
@@ -691,6 +691,32 @@ export class RexBlockClosed extends Schema.TaggedError<RexBlockClosed>()("RexBlo
     super({
       blockId,
       message: `Block ${blockId} closed, so its data stream ended. Do not reconnect to it.`,
+    });
+  }
+}
+
+/**
+ * A terminal's program exited, or its output ended, before what a wait looked for appeared.
+ *
+ * @category errors
+ * @since 0.1.0
+ */
+export class RexTerminalExited extends Schema.TaggedError<RexTerminalExited>()(
+  "RexTerminalExited",
+  {
+    blockId: Schema.String,
+    exitCode: Schema.NullOr(Schema.Number),
+    message: Schema.String,
+  },
+) {
+  /** Creates the failure for a terminal whose program exited with `exitCode`, if known. */
+  constructor(blockId: string, exitCode: Option.Option<number>) {
+    super({
+      blockId,
+      exitCode: Option.getOrNull(exitCode),
+      message: Option.isSome(exitCode)
+        ? `The program in block ${blockId} exited with code ${exitCode.value} before the output appeared.`
+        : `The output of block ${blockId} ended before the output appeared.`,
     });
   }
 }

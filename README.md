@@ -48,23 +48,55 @@ See [examples/project-workspace.ts](examples/project-workspace.ts) for a fuller 
 
 ## Namespaces
 
-| Namespace   | Highlights                                                                                                                                            |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server`    | `status`, `version`, `whoami`, `reloadConfig`, `stop`, `tailscale.*`, `apple.*`                                                                       |
-| `sessions`  | `list`, `create` (with typed layouts), `destroy`, `view`, `watchView`, `attach`, `bootstrap`                                                          |
-| `windows`   | `create`, `close`, `focus`, `focusNext`, `move`, `setLabel`                                                                                           |
-| `blocks`    | `split`, `splitBeside`, `move`, `swap`, `zoom`, `float`, `focus*`, `resize`, `close`, `sendEvent`, `callMethod`                                       |
-| `layers`    | `create`, `close`, `raise`, `lower`, `resize`, `setState` (minimize or restore)                                                                       |
-| `terminals` | `write`, `writeLine`, `read` (pages long output), `waitForOutput`, `waitForExit`, `stream`, `readFile`, `downloadToFile`, `download`, `pasteFiles`, … |
-| `tunnels`   | `forwardLocal` (like `ssh -L`), `forwardRemote` (like `ssh -R`), `openStream`, `connections`, `createDial`, `info`                                    |
-| `clients`   | `list`, `inspect`, `action`, `perform`, `key`, `keymap`, `servePerformRequests`, `serveCallRequests`                                                  |
-| `events`    | `stream`, `waitFor`                                                                                                                                   |
-| `targets`   | `resolve`, `complete`                                                                                                                                 |
-| `hosts`     | `list`, `put`, `remove`                                                                                                                               |
-| `creators`  | `list`                                                                                                                                                |
+| Namespace   | Highlights                                                                                                                                                                                 |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `server`    | `status`, `version`, `whoami`, `reloadConfig`, `stop`, `tailscale.*`, `apple.*`                                                                                                            |
+| `sessions`  | `list`, `create` (with typed layouts), `destroy`, `view`, `watchView`, `attach`, `bootstrap`                                                                                               |
+| `windows`   | `create`, `close`, `focus`, `focusNext`, `move`, `setLabel`                                                                                                                                |
+| `blocks`    | `split`, `splitBeside`, `move`, `swap`, `zoom`, `float`, `focus*`, `resize`, `close`, `sendEvent`, `callMethod`                                                                            |
+| `layers`    | `create`, `close`, `raise`, `lower`, `resize`, `setState` (minimize or restore)                                                                                                            |
+| `terminals` | `write`, `writeLine`, `read`, `readTail`, `mark`, `waitForOutput`, `waitForQuiet`, `waitForExit`, `watch`, `activity`, `stream`, `readFile`, `downloadToFile`, `download`, `pasteFiles`, … |
+| `tunnels`   | `forwardLocal` (like `ssh -L`), `forwardRemote` (like `ssh -R`), `openStream`, `connections`, `createDial`, `info`                                                                         |
+| `clients`   | `list`, `inspect`, `action`, `perform`, `key`, `keymap`, `servePerformRequests`, `serveCallRequests`                                                                                       |
+| `events`    | `stream`, `waitFor`                                                                                                                                                                        |
+| `targets`   | `resolve`, `complete`                                                                                                                                                                      |
+| `hosts`     | `list`, `put`, `remove`                                                                                                                                                                    |
+| `creators`  | `list`                                                                                                                                                                                     |
 
 Every operation's arguments are the documented method's arguments in camelCase, so
 `rex api describe <method>` documents them too.
+
+## Waiting on terminal output
+
+The waits are built from small parts you can use on their own:
+
+| Part                                                 | What it is                                                                                                 |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `terminals.activity`                                 | A signal: `Ready`, then `Output` byte counts and `Exited`. One data connection per block, shared.          |
+| `terminals.readTail`                                 | The end of the output as lines with byte offsets, from one snapshot, without reading the whole scrollback. |
+| `terminals.mark` + `linesSinceRexMark`               | A place in the output; later text tells which of its lines came after it, and how sure it is.              |
+| `findRexOutputMatch`                                 | A pure query: a substring or regex, over all lines, the last `lines`, or lines `since` a mark.             |
+| `terminals.watch`                                    | Text at the start, after each burst of output, and after the exit; no reads while the terminal is quiet.   |
+| `terminals.waitForOutput` / `terminals.waitForQuiet` | `watch` + a query until it matches / `activity` until nothing is written for a while.                      |
+
+```ts
+const mark = yield * rex.terminals.mark(target);
+yield * rex.terminals.writeLine(target, "pnpm test");
+const match =
+  yield *
+  rex.terminals.waitForOutput(
+    target,
+    { pattern: /(\d+) (passed|failed)/, since: mark },
+    { timeout: "2 minutes" },
+  );
+```
+
+With `since`, earlier output and the typed command line never match. `match.alignment` says how
+the mark was found: `offset` and `anchor` are exact; `unaligned` means the output was cleared or
+more than the read window arrived after the mark, so every line in the window counted.
+
+Rex allows one data connection per client and block, so `activity`, `watch`, and the waits share
+one, but `terminals.stream` opens its own: don't stream a block you also wait on.
 
 ## Configuration
 

@@ -44,9 +44,14 @@ return done.timedOut ? "still running" : done.match.groups[0];
 - **Parameters** are one flat object: SDK positional arguments (`sessionId`, `blockId`, `text`, …)
   sit beside the fields of the SDK's input object. Layouts are typed `RexLayoutNode` trees.
 - **Results** are the SDK's decoded values as plain JSON in camelCase; `Option` becomes `null`.
-- **Waits** (`terminals_waitForOutput`, `terminals_waitForExit`, `events_waitFor`) require
-  `timeoutMs` and resolve to `{ timedOut: true }` when it passes, or
-  `{ timedOut: false, match | exit | event }`. Any other failure rejects.
+- **Marks**: `terminals_writeLine` and `terminals_mark` return a `markId`, kept per pi session.
+  `terminals_waitForOutput({ since: markId })` matches only output printed after it, so neither
+  earlier output nor the typed command line matches, in any shell.
+- **Waits** (`terminals_waitForOutput`, `terminals_waitForQuiet`, `terminals_waitForExit`,
+  `events_waitFor`) require `timeoutMs` and resolve to `{ timedOut: true }` when it passes, or
+  `{ timedOut: false, match | quiet | exit | event }`. `terminals_waitForOutput` rejects with
+  `RexTerminalExited` when the program exits without a match. They read the terminal only after
+  it writes, over one data connection per block shared by every wait.
 - **Failures** reject with a message that starts with the SDK error tag, such as
   `RexSessionNotFound: …` or `RexConnectionLost: …`.
 - **Deadlines**: `requestTimeoutMs`, accepted by every tool, bounds each request the call makes.

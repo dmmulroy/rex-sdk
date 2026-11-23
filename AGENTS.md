@@ -29,6 +29,7 @@ API revision 18** only.
 | Request encoding, attachment rules     | `src/rex-operation.ts`, `src/rex-attachments.ts`                                                                                     |
 | Connection, handshake, events plumbing | `src/rex-control.ts`, `src/rex-events.ts`                                                                                            |
 | Data connections, terminal streams     | `src/rex-data-connection.ts`, `src/rex-data-codec.ts`, `src/rex-terminal-stream.ts`                                                  |
+| Terminal text, marks, waits            | `src/rex-terminal-text.ts`, `src/rex-output-query.ts` (pure), `src/rex-terminal-activity.ts`, `src/rex-terminal-watch.ts`            |
 | Byte streams, file transfers, forwards | `src/rex-bytes-stream.ts`, `src/rex-file-transfer.ts`, `src/rex-tunnel-forward.ts`; contract in `docs/research/rex-data-bytes-v1.md` |
 | Layout trees                           | `src/rex-layout.ts`                                                                                                                  |
 | Errors                                 | `src/rex-errors.ts`                                                                                                                  |
@@ -42,6 +43,8 @@ API revision 18** only.
 - Never retry or replay a request whose response was lost; surface `RexConnectionLost`.
 - Session-scoped operations attach through `RexAttachments`; callers never manage attachment.
 - Never fall back implicitly to `REX_SESSION`, `REX_BLOCK`, or `REX_CLIENT`.
+- Terminal tests script a block with `src/testing/rex-test-terminal.ts` (text, stream, typing, and
+  exit kept consistent).
 - Tests use `src/testing/rex-test-server.ts` through public services and must leave
   `server.violations()` empty; fix a fixture that violates the schema instead of loosening the
   check. Only `src/rex-live.test.ts` may touch a real server, in a session it creates and

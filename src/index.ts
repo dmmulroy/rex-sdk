@@ -14,6 +14,10 @@ export * from "./rex-errors.ts";
 export * from "./rex-layout.ts";
 export * from "./rex-events.ts";
 export * from "./rex-terminal-stream.ts";
+export * from "./rex-terminal-text.ts";
+export * from "./rex-output-query.ts";
+export * from "./rex-terminal-activity.ts";
+export * from "./rex-terminal-watch.ts";
 export {
   REX_BYTES_DATA_SUBPROTOCOL,
   REX_TERMINAL_DATA_SUBPROTOCOL,

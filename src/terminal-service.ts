@@ -12,15 +12,36 @@ import { rexCoreLayerWithoutDependencies } from "./rex-core.ts";
 import { openRexTerminalStream, type RexTerminalStreamOptions } from "./rex-terminal-stream.ts";
 import {
   RexBlockClosed,
-  RexInvalidInput,
   RexInvalidResponse,
   RexRequestTimeout,
   type RexConfigurationError,
   type RexDataError,
   type RexEventsLost,
   type RexOperationError,
+  type RexTerminalExited,
 } from "./rex-errors.ts";
 import { takeRexEvent } from "./rex-events.ts";
+import type { RexOutputMatch, RexOutputPattern, RexOutputQuery } from "./rex-output-query.ts";
+import {
+  makeRexTerminalActivity,
+  type RexTerminalActivity,
+  type RexTerminalActivityError,
+} from "./rex-terminal-activity.ts";
+import {
+  makeRexTerminalText,
+  markRexTerminalText,
+  type RexTerminalMark,
+  type RexTerminalText,
+} from "./rex-terminal-text.ts";
+import {
+  waitForRexOutput,
+  waitForRexQuiet,
+  watchRexTerminal,
+  type RexTerminalFrame,
+  type RexWaitForOutputOptions,
+  type RexWaitForQuietOptions,
+  type RexWatchOptions,
+} from "./rex-terminal-watch.ts";
 import { makeRexFileTransfer, type IRexFileTransfer } from "./rex-file-transfer.ts";
 import type { RexTerminalStreamItem } from "./rex-terminal-stream.ts";
 import {
@@ -54,77 +75,6 @@ export interface RexTerminalExit {
 export interface RexWaitForExitOptions {
   /** How long to wait before failing with `RexRequestTimeout`; waits forever when left out. */
   readonly timeout?: Duration.Input | undefined;
-}
-
-/**
- * What {@link ITerminalService.waitForOutput} looks for in each line: a substring, or a regular
- * expression tested against one line at a time, so `^` and `$` anchor to the line.
- *
- * @category models
- * @since 0.1.0
- */
-export type RexOutputPattern = string | RegExp;
-
-/**
- * Options for {@link ITerminalService.waitForOutput}.
- *
- * @category models
- * @since 0.1.0
- */
-export interface RexWaitForOutputOptions {
-  /** Search only the last `lines` lines of the screen and scrollback; searches all when left out. */
-  readonly lines?: number | undefined;
-  /** How long to wait before failing with `RexRequestTimeout`; waits forever when left out. */
-  readonly timeout?: Duration.Input | undefined;
-  /** How often to read the terminal again; defaults to 250 milliseconds. */
-  readonly interval?: Duration.Input | undefined;
-}
-
-/**
- * The line {@link ITerminalService.waitForOutput} found.
- *
- * @category models
- * @since 0.1.0
- */
-export interface RexOutputMatch {
-  /** The whole line that matched, with trailing spaces removed and wrapped lines joined. */
-  readonly line: string;
-  /** The text the pattern matched within the line. */
-  readonly text: string;
-  /** The regular expression's capture groups, in order; empty for a substring. */
-  readonly groups: ReadonlyArray<string | undefined>;
-}
-
-/**
- * The bottom-most line of `text` matching `pattern`, searching only the last `lines` lines.
- *
- * @category utils
- * @since 0.1.0
- */
-export function findRexOutputMatch(
-  text: string,
-  pattern: RexOutputPattern,
-  lines?: number,
-): Option.Option<RexOutputMatch> {
-  // A global or sticky regex keeps `lastIndex` between calls; a copy without those flags does not.
-  const regex =
-    typeof pattern === "string"
-      ? undefined
-      : new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, ""));
-  const all = text.replace(/\n+$/, "").split("\n");
-  const searched = lines === undefined ? all : all.slice(Math.max(0, all.length - lines));
-  for (let index = searched.length - 1; index >= 0; index--) {
-    const line = searched[index] ?? "";
-    if (regex === undefined) {
-      if (typeof pattern === "string" && line.includes(pattern)) {
-        return Option.some({ line, text: pattern, groups: [] });
-      }
-      continue;
-    }
-    const found = regex.exec(line);
-    if (found !== null) return Option.some({ line, text: found[0], groups: found.slice(1) });
-  }
-  return Option.none();
 }
 
 /**
@@ -183,17 +133,58 @@ export interface ITerminalService extends IRexFileTransfer {
     options?: RexRequestOptions,
   ) => Effect.Effect<string, RexOperationError>;
   /**
-   * Reads the terminal until a line of its screen or scrollback matches `pattern`, returning the
-   * bottom-most match. Output already on screen counts, so a pattern that only the new output
-   * prints, or `lines`, keeps an earlier run from matching.
+   * The end of the screen and scrollback as lines with their byte offsets: `maxBytes` of it
+   * (default 65536), read from one consistent snapshot. Cheaper than `read` on long output.
+   */
+  readonly readTail: (
+    target: RexBlockTarget,
+    options?: { readonly maxBytes?: number | undefined },
+    requestOptions?: RexRequestOptions,
+  ) => Effect.Effect<RexTerminalText, RexOperationError>;
+  /**
+   * Marks the current end of the output. Make one before typing a command, then pass it as a
+   * query's `since` to match only what the command printed.
+   */
+  readonly mark: (
+    target: RexBlockTarget,
+    requestOptions?: RexRequestOptions,
+  ) => Effect.Effect<RexTerminalMark, RexOperationError>;
+  /**
+   * A signal of the program's output and exit: `Ready` once subscribed, then `Output` byte counts
+   * and `Exited`. Shares one data connection per block with every other subscriber, so it can be
+   * used by many waits at once, but not together with `stream` on the same block.
+   */
+  readonly activity: (
+    target: RexBlockTarget,
+  ) => Stream.Stream<RexTerminalActivity, RexTerminalActivityError>;
+  /**
+   * The terminal's text once at the start, again after each burst of output, and a last time
+   * after the program exits. Reads nothing while the terminal is quiet.
+   */
+  readonly watch: (
+    target: RexBlockTarget,
+    options?: RexWatchOptions,
+  ) => Stream.Stream<RexTerminalFrame, RexTerminalActivityError>;
+  /**
+   * Watches until a line matches the query, returning the bottom-most match. Output already on
+   * screen counts; give the query a `since` mark to count only output written after it.
    *
-   * Fails with `RexRequestTimeout` if `timeout` passes first.
+   * Fails with `RexTerminalExited` when the program exits with no match, and with
+   * `RexRequestTimeout` if `timeout` passes first.
    */
   readonly waitForOutput: (
     target: RexBlockTarget,
-    pattern: RexOutputPattern,
+    query: RexOutputPattern | RexOutputQuery,
     options?: RexWaitForOutputOptions,
-  ) => Effect.Effect<RexOutputMatch, RexOperationError>;
+  ) => Effect.Effect<RexOutputMatch, RexTerminalActivityError | RexTerminalExited>;
+  /**
+   * Waits until the program has written nothing for `quietFor`, or has exited. Fails with
+   * `RexRequestTimeout` if `timeout` passes first.
+   */
+  readonly waitForQuiet: (
+    target: RexBlockTarget,
+    options: RexWaitForQuietOptions,
+  ) => Effect.Effect<void, RexTerminalActivityError>;
   /** Types a line of text and presses Return. */
   readonly writeLine: (
     target: RexBlockTarget,
@@ -345,43 +336,71 @@ export const makeTerminalService = Effect.gen(function* () {
     );
   });
 
-  const waitForOutput = Effect.fn("TerminalService.waitForOutput")(function* (
+  const readTail = Effect.fn("TerminalService.readTail")(function* (
     target: RexBlockTarget,
-    pattern: RexOutputPattern,
-    options: RexWaitForOutputOptions = {},
+    options: { readonly maxBytes?: number | undefined } = {},
+    requestOptions?: RexRequestOptions,
   ) {
-    if (options.lines !== undefined && !(Number.isInteger(options.lines) && options.lines > 0)) {
-      return yield* new RexInvalidInput(
-        "TerminalService.waitForOutput",
-        `lines must be a positive integer, got ${options.lines}`,
-      );
-    }
-    const interval = options.interval ?? Duration.millis(250);
-    const poll = Effect.gen(function* () {
-      while (true) {
-        const text = yield* read(target, { trim: true, unwrap: true });
-        const found = findRexOutputMatch(text, pattern, options.lines);
-        if (Option.isSome(found)) return found.value;
-        yield* Effect.sleep(interval);
-      }
-    });
-    if (options.timeout === undefined) return yield* poll;
-    const timeout = Duration.fromInputUnsafe(options.timeout);
-    return yield* poll.pipe(
-      Effect.timeoutOrElse({
-        duration: timeout,
-        orElse: () =>
-          Effect.fail(
-            new RexRequestTimeout("TerminalService.waitForOutput", "", Duration.toMillis(timeout)),
-          ),
-      }),
+    const tailBytes = options.maxBytes ?? 65_536;
+    const args = { trim: true, unwrap: true } as const;
+    const first = yield* format(
+      target,
+      { ...args, maxBytes: Math.min(tailBytes, 65_536) },
+      requestOptions,
     );
+    if (Option.isNone(first.id)) return makeRexTerminalText(first.content);
+    const id = first.id.value;
+    const firstBytes = Buffer.byteLength(first.content);
+    // Servers that leave `total` out can't be read from the end: read everything after the first part.
+    const total = Option.getOrElse(first.total, () => firstBytes);
+    const jump = Option.isSome(first.total) && total - tailBytes > firstBytes;
+    let offset = jump ? total - tailBytes : firstBytes;
+    const parts = jump ? [] : [first.content];
+    while (true) {
+      const part = yield* blobRead(target, { id, offset, maxBytes: 524_288 }, requestOptions);
+      parts.push(part.data);
+      offset += Buffer.byteLength(part.data);
+      if (part.eof) break;
+      if (part.data.length === 0) {
+        return yield* new RexInvalidResponse(
+          "com.superlogical.terminal.blob_read",
+          undefined,
+          "a part was empty before the end of the result",
+        );
+      }
+    }
+    const content = parts.join("");
+    if (!jump) return makeRexTerminalText(content, 0, false);
+    // The window may start inside a line, or inside a character: drop up to the first newline and
+    // count offsets back from the end, which is exact.
+    const newline = content.indexOf("\n");
+    const window = newline === -1 ? "" : content.slice(newline + 1);
+    return makeRexTerminalText(window, offset - Buffer.byteLength(window), true);
   });
+
+  const activity = yield* makeRexTerminalActivity((target) =>
+    openRexTerminalStream(config, control, attachments, target),
+  );
+  const watchDeps = {
+    activity,
+    readTail: (target: RexBlockTarget, options: { readonly maxBytes: number }) =>
+      readTail(target, options),
+    lastExit: (target: RexBlockTarget) =>
+      process(target).pipe(
+        Effect.map((state) => Option.map(state.lastExit, (exit) => exit.exitCode)),
+      ),
+  };
 
   return TerminalService.of({
     ...makeRexFileTransfer(config, control, attachments),
     read,
-    waitForOutput,
+    readTail,
+    mark: (target, requestOptions) =>
+      Effect.map(readTail(target, {}, requestOptions), markRexTerminalText),
+    activity,
+    watch: (target, options) => watchRexTerminal(watchDeps, target, options),
+    waitForOutput: (target, query, options) => waitForRexOutput(watchDeps, target, query, options),
+    waitForQuiet: (target, options) => waitForRexQuiet(watchDeps, target, options),
     writeLine: (target, text, options) =>
       Effect.asVoid(write(target, { data: `${text}\r` }, options)),
     waitForExit,

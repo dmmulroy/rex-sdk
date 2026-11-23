@@ -19,6 +19,7 @@ import {
   rexWireMethods,
 } from "../../src/index.ts";
 import { rexBlockMethodExamples } from "../../src/testing/rex-block-method-examples.ts";
+import { startRexTestTerminal } from "../../src/testing/rex-test-terminal.ts";
 import {
   rexTestServerError,
   startRexTestServer,
@@ -41,6 +42,9 @@ const uuid = "01234567-89ab-cdef-0123-456789abcdef";
 const sessionId = SessionId.make(`session:${uuid}`);
 const blockId = BlockId.make(`block:${uuid}`);
 const here = { sessionId, blockId };
+/** A terminal whose program already exited, and a shell for the mark flow. */
+const exitedBlockId = BlockId.make("block:01234567-89ab-cdef-0123-000000000002");
+const shellBlockId = BlockId.make("block:01234567-89ab-cdef-0123-000000000003");
 
 // ---------------------------------------------------------------------------------------------
 // JSON helpers that keep tests free of type assertions.
@@ -116,7 +120,10 @@ const customArguments: { readonly [tool: string]: { readonly [key: string]: unkn
     match: { type: "regex", value: "\\bls$" },
     timeoutMs: 2_000,
   },
-  rex_terminals_waitForExit: { ...here, timeoutMs: 2_000 },
+  rex_terminals_waitForExit: { sessionId, blockId: exitedBlockId, timeoutMs: 2_000 },
+  rex_terminals_waitForQuiet: { ...here, quietForMs: 50, timeoutMs: 2_000 },
+  rex_terminals_mark: here,
+  rex_terminals_readTail: { ...here, maxBytes: 4_096 },
   rex_terminals_read: { ...here, trim: true, unwrap: true },
   rex_terminals_readFile: { ...here, path: "report.csv" },
   rex_terminals_pasteFiles: { ...here, files: [{ name: "notes.txt", text: "hello" }] },
@@ -142,7 +149,6 @@ const unreachedMethods = new Set([
   "session.detach",
   "session.attach_all",
   "session.bootstrap",
-  "data.connect",
   "com.superlogical.onboarding.set_step",
   "com.superlogical.onboarding.state",
 ]);
@@ -171,6 +177,8 @@ const acceptsUpload: RexTestServerBytesPeer = (connection) =>
 /** Answers every method with a result valid for its output schema. */
 function handleEverything(server: IRexTestServer) {
   for (const method of Object.keys(rexWireMethods)) {
+    // The test server issues live tickets for data.connect; the documented one is not live.
+    if (method === "data.connect") continue;
     const example = exampleFor.get(method)?.response_example;
     server.handle(method, () => Effect.succeed(concrete(example)));
   }
@@ -184,8 +192,12 @@ function handleEverything(server: IRexTestServer) {
   for (const [method, example] of Object.entries(rexBlockMethodExamples)) {
     server.handle(method, () => Effect.succeed(example.result));
   }
-  server.handle("com.superlogical.terminal.process", () =>
-    Effect.succeed({ last_exit: { exit_code: 0 } }),
+  // Terminal methods go to scripted terminals, which keep text, stream, and exit consistent.
+  startRexTestTerminal(server, here, { content: "$ ls" });
+  startRexTestTerminal(
+    server,
+    { sessionId, blockId: exitedBlockId },
+    { content: "done", exitedWith: 0 },
   );
   server.handle("com.superlogical.terminal.download_begin", (payload) =>
     Effect.sync(() => ({
@@ -467,46 +479,86 @@ describe("rex codemode tools", () => {
   });
 
   test("a wait that passes its timeoutMs resolves to { timedOut: true }", async () => {
-    server.handle("com.superlogical.terminal.process", () => Effect.succeed({ last_exit: null }));
-    try {
-      const output = await callTool(tools.tools, "rex_terminals_waitForOutput", {
-        ...here,
-        match: { type: "substring", value: "never printed" },
-        timeoutMs: 300,
-      });
-      expect(output.structuredContent).toEqual({ timedOut: true });
-      const exit = await callTool(tools.tools, "rex_terminals_waitForExit", {
-        ...here,
-        timeoutMs: 300,
-      });
-      expect(exit.structuredContent).toEqual({ timedOut: true });
-      const event = await callTool(tools.tools, "rex_events_waitFor", {
-        type: "never_sent",
-        timeoutMs: 300,
-      });
-      expect(event.structuredContent).toEqual({ timedOut: true });
-    } finally {
-      server.handle("com.superlogical.terminal.process", () =>
-        Effect.succeed({ last_exit: { exit_code: 0 } }),
-      );
-    }
+    const output = await callTool(tools.tools, "rex_terminals_waitForOutput", {
+      ...here,
+      match: { type: "substring", value: "never printed" },
+      timeoutMs: 300,
+    });
+    expect(output.structuredContent).toEqual({ timedOut: true });
+    const exit = await callTool(tools.tools, "rex_terminals_waitForExit", {
+      ...here,
+      timeoutMs: 300,
+    });
+    expect(exit.structuredContent).toEqual({ timedOut: true });
+    const event = await callTool(tools.tools, "rex_events_waitFor", {
+      type: "never_sent",
+      timeoutMs: 300,
+    });
+    expect(event.structuredContent).toEqual({ timedOut: true });
   });
 
   test("waits resolve to { timedOut: false, value } with the SDK's result", async () => {
+    // Output already on screen matches without a mark, even after the program exited.
     const output = await callTool(tools.tools, "rex_terminals_waitForOutput", {
-      ...here,
-      match: { type: "regex", value: "(\\w+)$" },
+      sessionId,
+      blockId: exitedBlockId,
+      match: { type: "regex", value: "^(\\w+)$" },
       timeoutMs: 1_000,
     });
     expect(output.structuredContent).toEqual({
       timedOut: false,
-      match: { line: "$ ls", text: "ls", groups: ["ls"] },
+      match: { line: "done", text: "done", groups: ["done"], alignment: null },
     });
     const exit = await callTool(tools.tools, "rex_terminals_waitForExit", {
-      ...here,
+      sessionId,
+      blockId: exitedBlockId,
       timeoutMs: 1_000,
     });
     expect(exit.structuredContent).toEqual({ timedOut: false, exit: { exitCode: 0, error: null } });
+  });
+
+  test("writeLine returns a mark; waitForOutput since it matches only what the command printed", async () => {
+    const shell = { sessionId, blockId: shellBlockId };
+    const terminal = startRexTestTerminal(server, shell, { content: "$ pnpm test\npassed\n$ " });
+    const written = await callTool(tools.tools, "rex_terminals_writeLine", {
+      ...shell,
+      text: "pnpm test",
+    });
+    const markId = fieldOf(written.structuredContent, "markId");
+    expect(markId).toMatch(/^mark-\d+$/);
+    const wait = callTool(tools.tools, "rex_terminals_waitForOutput", {
+      ...shell,
+      since: markId,
+      match: { type: "regex", value: "passed|failed" },
+      timeoutMs: 2_000,
+    });
+    // The earlier "passed" line and the typed command don't count; this does.
+    setTimeout(() => terminal.print("1 failed\n$ "), 300);
+    expect((await wait).structuredContent).toEqual({
+      timedOut: false,
+      match: { line: "1 failed", text: "failed", groups: [], alignment: "offset" },
+    });
+    const otherBlock = await rejection(
+      callTool(tools.tools, "rex_terminals_waitForOutput", {
+        ...here,
+        since: markId,
+        match: { type: "substring", value: "x" },
+        timeoutMs: 100,
+      }),
+    );
+    expect(otherBlock.tag).toBe("RexUnknownMark");
+  });
+
+  test("waitForOutput rejects with RexTerminalExited when the program exits without a match", async () => {
+    const error = await rejection(
+      callTool(tools.tools, "rex_terminals_waitForOutput", {
+        sessionId,
+        blockId: exitedBlockId,
+        match: { type: "substring", value: "never printed" },
+        timeoutMs: 1_000,
+      }),
+    );
+    expect(error.tag).toBe("RexTerminalExited");
   });
 
   test("a server rejection rejects with the SDK error tag first", async () => {

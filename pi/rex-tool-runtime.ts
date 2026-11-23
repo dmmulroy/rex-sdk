@@ -6,6 +6,7 @@
 import { Cause, Duration, Effect, Exit, Layer, ManagedRuntime, Option } from "effect";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { RexSdk } from "../src/index.ts";
+import { RexMarkStore } from "./rex-tool-marks.ts";
 import type { RexToolOperation } from "./rex-tool-operations.ts";
 import {
   encodeRexToolResult,
@@ -16,6 +17,8 @@ import {
 /** Owns one SDK runtime for a pi session; rebuilt after `dispose()` or a configuration failure. */
 export class RexToolRuntime {
   #runtime: ManagedRuntime.ManagedRuntime<RexSdk, unknown> | undefined;
+  /** Marks handed out in this pi session, by markId. */
+  marks = new RexMarkStore();
   readonly #makeLayer: () => Layer.Layer<RexSdk, unknown>;
 
   constructor(makeLayer: () => Layer.Layer<RexSdk, unknown>) {
@@ -30,6 +33,7 @@ export class RexToolRuntime {
   async dispose(): Promise<void> {
     const runtime = this.#runtime;
     this.#runtime = undefined;
+    this.marks = new RexMarkStore();
     await runtime?.dispose();
   }
 }
@@ -66,13 +70,14 @@ function describeFailure(error: unknown): RexToolError {
 export function makeRexToolProgram(
   operation: RexToolOperation,
   params: { readonly [key: string]: unknown },
+  marks: RexMarkStore,
 ): Effect.Effect<RexToolJson, unknown, RexSdk> {
   return Effect.gen(function* () {
     const { [REX_REQUEST_TIMEOUT_FIELD]: requestTimeoutMs, ...rest } = params;
     const options =
       typeof requestTimeoutMs === "number" ? { timeout: Duration.millis(requestTimeoutMs) } : {};
     const rex = yield* RexSdk;
-    const result = yield* operation.program(rex, rest, options);
+    const result = yield* operation.program(rex, rest, options, marks);
     return encodeRexToolResult(result);
   });
 }

@@ -57,7 +57,10 @@ export function toRexCodemodeTool(
   runtime: RexToolRuntime,
 ): RexCodemodeTool {
   const call = async (params: unknown, signal?: AbortSignal) => {
-    const exit = await runtime.run(makeRexToolProgram(operation, paramsObject(params)), signal);
+    const exit = await runtime.run(
+      makeRexToolProgram(operation, paramsObject(params), runtime.marks),
+      signal,
+    );
     try {
       return toRexToolResult(exit);
     } catch (error) {

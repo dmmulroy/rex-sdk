@@ -536,6 +536,8 @@ export function startRexTestServer(options: RexTestServerOptions = {}) {
             const state = issued === undefined ? undefined : dataStreams.get(issued.blockId);
             if (state === undefined) return reject(0x01);
             if (state.stream.rejectWith !== undefined) return reject(state.stream.rejectWith);
+            // Rex allows one data connection per client and block: a second is `already_connected`.
+            if (state.sockets.size > 0) return reject(0x02);
             state.sent.length = 0;
             welcome(ws, state, 0);
             for (const chunk of state.stream.chunks) send(ws, state, chunk);
