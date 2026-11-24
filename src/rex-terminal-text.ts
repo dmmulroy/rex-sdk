@@ -38,13 +38,18 @@ export function makeRexTerminalText(
   start = 0,
   truncated = false,
 ): RexTerminalText {
-  const lines = content.split("\n").map((line) => line.replace(/[ \t\r]+$/, ""));
-  while (lines.length > 0 && lines.at(-1) === "") lines.pop();
+  const lines: string[] = [];
   const lineOffsets: number[] = [];
   let offset = start;
-  for (const line of lines) {
+  // Offsets count the trailing spaces that the lines leave out, so they stay exact.
+  for (const raw of content.split("\n")) {
+    lines.push(raw.replace(/[ \t\r]+$/, ""));
     lineOffsets.push(offset);
-    offset += Buffer.byteLength(line) + 1;
+    offset += Buffer.byteLength(raw) + 1;
+  }
+  while (lines.length > 0 && lines.at(-1) === "") {
+    lines.pop();
+    lineOffsets.pop();
   }
   return { lines, lineOffsets, truncated };
 }

@@ -1,7 +1,7 @@
 /**
  * Terminal text, activity, watches, and waits, against a scripted terminal on the test server.
  */
-import { Effect, Exit, Fiber, Option, Stream } from "effect";
+import { Effect, Exit, Fiber, Option, Schema, Stream } from "effect";
 import { describe, expect, test } from "vite-plus/test";
 import { BlockId, SessionId } from "./rex-domain.ts";
 import { RexSdk } from "./rex-sdk.ts";
@@ -14,6 +14,10 @@ import { startRexTestTerminal } from "./testing/rex-test-terminal.ts";
 const sessionId = SessionId.make("session:01a1aaaa-0000-0000-0000-000000000001");
 const blockId = BlockId.make("block:01a1bbbb-0000-0000-0000-000000000001");
 const target = { sessionId, blockId };
+
+const decodeBlobReadOffset = Schema.decodeUnknownSync(
+  Schema.Struct({ args: Schema.Struct({ offset: Schema.Number }) }),
+);
 
 const failureTags = <A, E extends { readonly _tag: string }>(exit: Exit.Exit<A, E>) =>
   Exit.isFailure(exit)
@@ -39,6 +43,136 @@ describe("readTail", () => {
         // The first part, then one jump to the end: the long middle is never read.
         const blobReads = server.requestsFor("com.superlogical.terminal.blob_read");
         expect(blobReads.length).toBe(1);
+      }),
+    ));
+
+  test("keeps only the last maxBytes when the first part overlaps the tail", () =>
+    runRexSdkTest((server) =>
+      Effect.gen(function* () {
+        // 500 bytes ending with a unique marker line, then exactly 1,000 bytes of tail lines.
+        const head = `${"h".repeat(480)}\nMARKER-BEFORE-TAIL\n`;
+        const tailLines = Array.from(
+          { length: 100 },
+          (_, index) => `tail ${String(index).padStart(4, "0")}${index === 0 ? "!" : ""}`,
+        );
+        const tailContent = tailLines.join("\n");
+        expect([Buffer.byteLength(head), Buffer.byteLength(tailContent)]).toEqual([500, 1_000]);
+        startRexTestTerminal(server, target, { content: head + tailContent });
+        const rex = yield* RexSdk;
+        const tail = yield* rex.terminals.readTail(target, { maxBytes: 1_000 });
+        expect(tail.lines).not.toContain("MARKER-BEFORE-TAIL");
+        expect(tail.truncated).toBe(true);
+        // The line that starts exactly at the cutoff is whole, so it stays.
+        expect(tail.lines).toEqual(tailLines);
+        expect(tail.lineOffsets).toEqual(makeRexTerminalText(tailContent, 500).lineOffsets);
+        expect(tail.lineOffsets[0]).toBe(500);
+      }),
+    ));
+
+  // A window over half the output overlaps the first part; a smaller one jumps to the end.
+  for (const [path, rows, line, jumps] of [
+    ["an overlapping first part", 60, 10, false],
+    ["a jump to the end", 400, 380, true],
+  ] as const) {
+    test(`drops a line cut inside a multibyte character and keeps one starting at the cutoff, after ${path}`, () =>
+      runRexSdkTest((server) =>
+        Effect.gen(function* () {
+          const content = Array.from({ length: rows }, (_, index) => `✓✓ row ${index} ✓`).join(
+            "\n",
+          );
+          const total = Buffer.byteLength(content);
+          const full = makeRexTerminalText(content);
+          startRexTestTerminal(server, target, { content });
+          const rex = yield* RexSdk;
+          const lineStart = full.lineOffsets[line] ?? 0;
+          const expectFrom = (first: number) => ({
+            lines: full.lines.slice(first),
+            lineOffsets: full.lineOffsets.slice(first),
+            truncated: true,
+          });
+
+          // One byte into the line's first ✓: the line is cut, so it is left out.
+          const insideCharacter = yield* rex.terminals.readTail(target, {
+            maxBytes: total - (lineStart + 1),
+          });
+          expect(insideCharacter).toEqual(expectFrom(line + 1));
+          // Exactly at the line's start: the whole line is kept.
+          const atLineStart = yield* rex.terminals.readTail(target, {
+            maxBytes: total - lineStart,
+          });
+          expect(atLineStart).toEqual(expectFrom(line));
+
+          // A jump reads from one byte before the window; otherwise reading continues past the first part.
+          const offsets = server
+            .requestsFor("com.superlogical.terminal.blob_read")
+            .map((request) => decodeBlobReadOffset(request.payload).args.offset);
+          if (jumps) expect(offsets).toEqual([lineStart, lineStart - 1]);
+          else expect(offsets.every((offset) => offset > lineStart)).toBe(true);
+        }),
+      ));
+  }
+
+  test("keeps exact offsets across parts when the jump lands inside a character", () =>
+    runRexSdkTest((server) =>
+      Effect.gen(function* () {
+        const content = Array.from(
+          { length: 25_000 },
+          (_, index) => `${"✓".repeat(20)} row ${index}`,
+        ).join("\n");
+        const total = Buffer.byteLength(content);
+        const full = makeRexTerminalText(content);
+        startRexTestTerminal(server, target, { content });
+        const rex = yield* RexSdk;
+        const line = 15_000;
+        const lineStart = full.lineOffsets[line] ?? 0;
+        // The window starts at the line's second ✓, so the jump lands on the first ✓'s last byte,
+        // and the tail is larger than one 512 KiB part.
+        const maxBytes = total - (lineStart + 3);
+        expect(maxBytes).toBeGreaterThan(524_288);
+        const tail = yield* rex.terminals.readTail(target, { maxBytes });
+        expect(tail).toEqual({
+          lines: full.lines.slice(line + 1),
+          lineOffsets: full.lineOffsets.slice(line + 1),
+          truncated: true,
+        });
+        const offsets = server
+          .requestsFor("com.superlogical.terminal.blob_read")
+          .map((request) => decodeBlobReadOffset(request.payload).args.offset);
+        // Two steps back to the ✓'s first byte, then whole parts from there.
+        expect(offsets.slice(0, 3)).toEqual([lineStart + 2, lineStart + 1, lineStart]);
+        expect(offsets.length).toBeGreaterThan(3);
+      }),
+    ));
+
+  test("counts trimmed trailing spaces in line offsets", () =>
+    runRexSdkTest((server) =>
+      Effect.gen(function* () {
+        const content = Array.from({ length: 200 }, (_, index) => `row ${index}   `).join("\n");
+        startRexTestTerminal(server, target, { content });
+        const rex = yield* RexSdk;
+        const tail = yield* rex.terminals.readTail(target, { maxBytes: 600 });
+        const lastStart = Buffer.byteLength(content) - Buffer.byteLength("row 199   ");
+        expect(tail.lines.at(-1)).toBe("row 199");
+        expect(tail.lineOffsets.at(-1)).toBe(lastStart);
+      }),
+    ));
+
+  test("returns all of a snapshot that fits in maxBytes, untruncated", () =>
+    runRexSdkTest((server) =>
+      Effect.gen(function* () {
+        const content = Array.from(
+          { length: 100 },
+          (_, index) => `fits ${String(index).padStart(4, "0")}`,
+        ).join("\n");
+        expect(Buffer.byteLength(content)).toBe(999);
+        startRexTestTerminal(server, target, { content });
+        const rex = yield* RexSdk;
+        expect(yield* rex.terminals.readTail(target, { maxBytes: 999 })).toEqual(
+          makeRexTerminalText(content),
+        );
+        expect(yield* rex.terminals.readTail(target, { maxBytes: 1_000 })).toEqual(
+          makeRexTerminalText(content),
+        );
       }),
     ));
 

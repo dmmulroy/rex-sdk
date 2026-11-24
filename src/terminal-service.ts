@@ -227,6 +227,26 @@ export class TerminalService extends Context.Service<TerminalService, ITerminalS
 ) {}
 
 /**
+ * The last `tailBytes` UTF-8 bytes of the output as whole lines.
+ *
+ * `content` is the output from byte `start` to the end, beginning on a character. A line that
+ * starts before the window is dropped; one that starts exactly at its first byte is kept.
+ */
+function rexTerminalTail(content: string, start: number, tailBytes: number): RexTerminalText {
+  const bytes = Buffer.from(content, "utf8");
+  const cutoff = bytes.length - tailBytes;
+  if (cutoff <= 0) return makeRexTerminalText(content, start, start > 0);
+  // A newline byte never occurs inside a UTF-8 character, so this finds a line start even when
+  // the cutoff falls inside a character.
+  const newline = bytes.indexOf(0x0a, cutoff - 1);
+  const kept = newline === -1 ? bytes.length : newline + 1;
+  return makeRexTerminalText(bytes.subarray(kept).toString("utf8"), start + kept, true);
+}
+
+/** Before a jump, how far back to look for the start of the character the jump lands in. */
+const maxUtf8ContinuationBytes = 3;
+
+/**
  * Constructs terminal operations over the shared control connection.
  *
  * @category constructors
@@ -348,20 +368,45 @@ export const makeTerminalService = Effect.gen(function* () {
       { ...args, maxBytes: Math.min(tailBytes, 65_536) },
       requestOptions,
     );
-    if (Option.isNone(first.id)) return makeRexTerminalText(first.content);
+    if (Option.isNone(first.id)) return rexTerminalTail(first.content, 0, tailBytes);
     const id = first.id.value;
+    const readPart = (offset: number) =>
+      blobRead(target, { id, offset, maxBytes: 524_288 }, requestOptions);
     const firstBytes = Buffer.byteLength(first.content);
     // Servers that leave `total` out can't be read from the end: read everything after the first part.
     const total = Option.getOrElse(first.total, () => firstBytes);
-    const jump = Option.isSome(first.total) && total - tailBytes > firstBytes;
-    let offset = jump ? total - tailBytes : firstBytes;
-    const parts = jump ? [] : [first.content];
+    // Jump to one byte before the window, so a line that starts exactly at it is seen to be whole.
+    const before = total - tailBytes - 1;
+    const jump = Option.isSome(first.total) && before > firstBytes;
+    let start = 0;
+    const parts: Array<string> = [];
+    let pending: Option.Option<{ readonly data: string; readonly eof: boolean }> = Option.none();
+    if (jump) {
+      // A read that lands inside a character starts with U+FFFD in place of the bytes it cut, so
+      // its byte length isn't the length it read. Step back to the character's first byte, so
+      // every offset after it is exact.
+      start = before;
+      let landed = yield* readPart(start);
+      while (
+        landed.data.startsWith("\uFFFD") &&
+        before - start < maxUtf8ContinuationBytes &&
+        start > firstBytes
+      ) {
+        start -= 1;
+        landed = yield* readPart(start);
+      }
+      pending = Option.some(landed);
+    } else {
+      parts.push(first.content);
+    }
+    let offset = jump ? start : firstBytes;
     while (true) {
-      const part = yield* blobRead(target, { id, offset, maxBytes: 524_288 }, requestOptions);
-      parts.push(part.data);
-      offset += Buffer.byteLength(part.data);
-      if (part.eof) break;
-      if (part.data.length === 0) {
+      const current = Option.isSome(pending) ? pending.value : yield* readPart(offset);
+      pending = Option.none();
+      parts.push(current.data);
+      offset += Buffer.byteLength(current.data);
+      if (current.eof) break;
+      if (current.data.length === 0) {
         return yield* new RexInvalidResponse(
           "com.superlogical.terminal.blob_read",
           undefined,
@@ -369,13 +414,7 @@ export const makeTerminalService = Effect.gen(function* () {
         );
       }
     }
-    const content = parts.join("");
-    if (!jump) return makeRexTerminalText(content, 0, false);
-    // The window may start inside a line, or inside a character: drop up to the first newline and
-    // count offsets back from the end, which is exact.
-    const newline = content.indexOf("\n");
-    const window = newline === -1 ? "" : content.slice(newline + 1);
-    return makeRexTerminalText(window, offset - Buffer.byteLength(window), true);
+    return rexTerminalTail(parts.join(""), start, tailBytes);
   });
 
   const activity = yield* makeRexTerminalActivity((target) =>
