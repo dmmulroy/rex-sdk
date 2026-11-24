@@ -133,8 +133,9 @@ export interface ITerminalService extends IRexFileTransfer {
     options?: RexRequestOptions,
   ) => Effect.Effect<string, RexOperationError>;
   /**
-   * The end of the screen and scrollback as lines with their byte offsets: `maxBytes` of it
-   * (default 65536), read from one consistent snapshot. Cheaper than `read` on long output.
+   * The end of the screen and scrollback as lines with their byte offsets: the whole lines in its
+   * last `maxBytes` bytes (default 65536), read from one consistent snapshot. Cheaper than `read`
+   * on long output whenever the tail fits in one `blob_read`.
    */
   readonly readTail: (
     target: RexBlockTarget,
@@ -227,24 +228,27 @@ export class TerminalService extends Context.Service<TerminalService, ITerminalS
 ) {}
 
 /**
- * The last `tailBytes` UTF-8 bytes of the output as whole lines.
+ * The last `tailBytes` bytes of the output as whole lines.
  *
- * `content` is the output from byte `start` to the end, beginning on a character. A line that
- * starts before the window is dropped; one that starts exactly at its first byte is kept.
+ * `content` is a suffix of the output that ends at byte `end`, the end of the output. Lines are
+ * placed by counting back from `end`, so `content` may start inside a character: Rex shows the
+ * cut bytes as U+FFFD, which only changes the length of text before the first kept line. A line
+ * that starts before the window is dropped; one that starts exactly at its first byte is kept.
+ * See `docs/research/rex-blob-read.md`.
  */
-function rexTerminalTail(content: string, start: number, tailBytes: number): RexTerminalText {
+function rexTerminalTail(content: string, end: number, tailBytes: number): RexTerminalText {
   const bytes = Buffer.from(content, "utf8");
   const cutoff = bytes.length - tailBytes;
-  if (cutoff <= 0) return makeRexTerminalText(content, start, start > 0);
-  // A newline byte never occurs inside a UTF-8 character, so this finds a line start even when
-  // the cutoff falls inside a character.
+  if (cutoff <= 0) return makeRexTerminalText(content, end - bytes.length, end > bytes.length);
+  // A newline byte never occurs inside a UTF-8 character or a U+FFFD, so the first one at or
+  // after the byte before the window ends a line that started before it.
   const newline = bytes.indexOf(0x0a, cutoff - 1);
-  const kept = newline === -1 ? bytes.length : newline + 1;
-  return makeRexTerminalText(bytes.subarray(kept).toString("utf8"), start + kept, true);
+  const kept = bytes.subarray(newline === -1 ? bytes.length : newline + 1);
+  return makeRexTerminalText(kept.toString("utf8"), end - kept.length, true);
 }
 
-/** Before a jump, how far back to look for the start of the character the jump lands in. */
-const maxUtf8ContinuationBytes = 3;
+/** The most data one `blob_read` returns; Rex lowers larger `max_bytes` to this. */
+const maxBlobReadBytes = 983_040;
 
 /**
  * Constructs terminal operations over the shared control connection.
@@ -368,45 +372,36 @@ export const makeTerminalService = Effect.gen(function* () {
       { ...args, maxBytes: Math.min(tailBytes, 65_536) },
       requestOptions,
     );
-    if (Option.isNone(first.id)) return rexTerminalTail(first.content, 0, tailBytes);
-    const id = first.id.value;
-    const readPart = (offset: number) =>
-      blobRead(target, { id, offset, maxBytes: 524_288 }, requestOptions);
-    const firstBytes = Buffer.byteLength(first.content);
-    // Servers that leave `total` out can't be read from the end: read everything after the first part.
-    const total = Option.getOrElse(first.total, () => firstBytes);
-    // Jump to one byte before the window, so a line that starts exactly at it is seen to be whole.
-    const before = total - tailBytes - 1;
-    const jump = Option.isSome(first.total) && before > firstBytes;
-    let start = 0;
-    const parts: Array<string> = [];
-    let pending: Option.Option<{ readonly data: string; readonly eof: boolean }> = Option.none();
-    if (jump) {
-      // A read that lands inside a character starts with U+FFFD in place of the bytes it cut, so
-      // its byte length isn't the length it read. Step back to the character's first byte, so
-      // every offset after it is exact.
-      start = before;
-      let landed = yield* readPart(start);
-      while (
-        landed.data.startsWith("\uFFFD") &&
-        before - start < maxUtf8ContinuationBytes &&
-        start > firstBytes
-      ) {
-        start -= 1;
-        landed = yield* readPart(start);
-      }
-      pending = Option.some(landed);
-    } else {
-      parts.push(first.content);
+    if (Option.isNone(first.id)) {
+      return rexTerminalTail(first.content, Buffer.byteLength(first.content), tailBytes);
     }
-    let offset = jump ? start : firstBytes;
+    const id = first.id.value;
+    const firstBytes = Buffer.byteLength(first.content);
+    // Jump past the long middle when one read from the byte before the window could reach the
+    // end. That read may start inside a character, so no offset is ever computed from it: it is
+    // used only if it reaches the end, placed by counting back from `total`.
+    if (Option.isSome(first.total)) {
+      const total = first.total.value;
+      const before = total - tailBytes - 1;
+      if (before > firstBytes && tailBytes < maxBlobReadBytes) {
+        const part = yield* blobRead(
+          target,
+          { id, offset: before, maxBytes: maxBlobReadBytes },
+          requestOptions,
+        );
+        if (part.eof) return rexTerminalTail(part.data, total, tailBytes);
+      }
+    }
+    // Read forward from the end of the first part: every read starts on a character, so adding
+    // each part's length gives the next offset exactly.
+    const parts = [first.content];
+    let offset = firstBytes;
     while (true) {
-      const current = Option.isSome(pending) ? pending.value : yield* readPart(offset);
-      pending = Option.none();
-      parts.push(current.data);
-      offset += Buffer.byteLength(current.data);
-      if (current.eof) break;
-      if (current.data.length === 0) {
+      const part = yield* blobRead(target, { id, offset, maxBytes: 524_288 }, requestOptions);
+      parts.push(part.data);
+      offset += Buffer.byteLength(part.data);
+      if (part.eof) return rexTerminalTail(parts.join(""), offset, tailBytes);
+      if (part.data.length === 0) {
         return yield* new RexInvalidResponse(
           "com.superlogical.terminal.blob_read",
           undefined,
@@ -414,7 +409,6 @@ export const makeTerminalService = Effect.gen(function* () {
         );
       }
     }
-    return rexTerminalTail(parts.join(""), start, tailBytes);
   });
 
   const activity = yield* makeRexTerminalActivity((target) =>
