@@ -929,6 +929,41 @@ describe("client requests", () => {
     ));
 });
 
+describe("target lookup", () => {
+  test("sessionForBlock returns the containing session, or none when the block does not resolve", () =>
+    runRexSdkTest((server) =>
+      Effect.gen(function* () {
+        server.handle("target.resolve", () =>
+          Effect.succeed({
+            results: [
+              {
+                query: blockId,
+                status: "resolved",
+                target: {
+                  kind: "block",
+                  session_id: sessionId,
+                  block_id: blockId,
+                  label: "shell",
+                },
+              },
+            ],
+          }),
+        );
+        const rex = yield* RexSdk;
+        expect(yield* rex.targets.sessionForBlock(blockId)).toEqual(Option.some(sessionId));
+
+        server.handle("target.resolve", () =>
+          Effect.succeed({ results: [{ query: blockId, status: "not_found" }] }),
+        );
+        expect(yield* rex.targets.sessionForBlock(blockId)).toEqual(Option.none());
+        expect(server.requestsFor("target.resolve").map((request) => request.payload)).toEqual([
+          { kinds: ["block"], queries: [blockId] },
+          { kinds: ["block"], queries: [blockId] },
+        ]);
+      }),
+    ));
+});
+
 describe("configuration", () => {
   test("finds each platform's default personal-server socket", () => {
     const base = {

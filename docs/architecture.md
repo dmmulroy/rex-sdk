@@ -186,7 +186,8 @@ Endpoint order: `server` option, then `REX_SERVER`, then the personal-server def
 
 Addresses may be socket paths, `unix://` URLs, `host:port`, or `http(s)://`/`ws(s)://` URLs.
 Host labels from `rex hosts` are not resolved. `REX_SESSION`, `REX_BLOCK`, and `REX_CLIENT` are
-exposed as `config.ambient` and never used implicitly.
+exposed as `config.ambient` and never used implicitly. `targets.sessionForBlock` explicitly resolves
+the session that holds a block, so callers do not need `REX_SESSION`.
 
 ## Verification
 

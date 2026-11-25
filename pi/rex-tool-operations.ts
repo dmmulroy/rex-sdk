@@ -1192,6 +1192,16 @@ export const rexToolOperations: readonly RexToolOperation[] = [
       "Resolve queries such as labels, window positions, or short IDs into IDs; each result says whether it matched one thing, nothing, or several.",
     run: (rex, input, options) => rex.targets.resolve(input, options),
   }),
+  operation({
+    name: "targets_sessionForBlock",
+    method: "target.resolve",
+    readOnly: true,
+    description:
+      "Resolve the session that holds a block. Returns its sessionId, or null when the block no longer exists.",
+    fields: { blockId: BlockId },
+    output: Schema.Option(SessionId),
+    run: (rex, { blockId }, options) => rex.targets.sessionForBlock(blockId, options),
+  }),
   method({
     name: "targets_complete",
     method: "target.complete",

@@ -111,8 +111,10 @@ rexSdkLayerFromOptions({
 });
 ```
 
-Inside a Rex terminal, `REX_SESSION` and `REX_BLOCK` are available as
-`rex.config.ambient.sessionId` and `.blockId`. The SDK never uses them unless you pass them.
+Inside a Rex terminal, `REX_BLOCK` is available as `rex.config.ambient.blockId`. Older Rex
+versions also set `REX_SESSION`, available as `.sessionId`. The SDK never uses these IDs unless
+you pass them. Call `rex.targets.sessionForBlock(blockId)` to get the session that holds a block
+when `REX_SESSION` is unset.
 
 ## Errors
 

@@ -107,7 +107,7 @@ describe.runIf(live)("live Rex server", () => {
   test(
     "server, discovery, and listing operations decode",
     () =>
-      runLive((rex, sessionId) =>
+      runLive((rex, sessionId, shellBlockId) =>
         Effect.gen(function* () {
           // `server.version` reports the newest revision the server speaks, not the one in use.
           const version = yield* rex.server.version();
@@ -129,6 +129,7 @@ describe.runIf(live)("live Rex server", () => {
           yield* rex.sessions.help({ sessionId });
           const resolved = yield* rex.targets.resolve({ kinds: ["session"], queries: [sessionId] });
           expect(resolved).toBeDefined();
+          expect(yield* rex.targets.sessionForBlock(shellBlockId)).toEqual(Option.some(sessionId));
         }),
       ),
     30_000,

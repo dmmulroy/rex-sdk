@@ -36,7 +36,11 @@ import {
 import { rexToolExclusions, rexToolOperations } from "../rex-tool-operations.ts";
 import { RexToolError, type RexToolRuntime } from "../rex-tool-runtime.ts";
 import { encodeRexToolResult } from "../rex-tool-schemas.ts";
-import { REX_SEARCH_DEFAULT_LIMIT, REX_SEARCH_TOOL_NAME } from "../rex-tool-search.ts";
+import {
+  REX_SEARCH_DEFAULT_LIMIT,
+  REX_SEARCH_TOOL_NAME,
+  type RexSearchHere,
+} from "../rex-tool-search.ts";
 
 const uuid = "01234567-89ab-cdef-0123-456789abcdef";
 const sessionId = SessionId.make(`session:${uuid}`);
@@ -134,6 +138,7 @@ const customArguments: { readonly [tool: string]: { readonly [key: string]: unkn
   rex_tunnels_createDial: { sessionId, options: { host: "127.0.0.1", port: 5432 } },
   rex_tunnels_createListen: { sessionId, label: "web", options: { port: 0 } },
   rex_events_waitFor: { type: "session_destroyed", sessionId, timeoutMs: 2_000 },
+  rex_targets_sessionForBlock: { blockId },
 };
 
 function argumentsFor(toolName: string): { readonly [key: string]: unknown } {
@@ -224,7 +229,7 @@ interface Registered {
   readonly runtime: RexToolRuntime;
 }
 
-function register(socketPath: string): Registered {
+function register(socketPath: string, here: RexSearchHere = { sessionId, blockId }): Registered {
   const registered: Array<ToolDefinition<TSchema, undefined>> = [];
   const shutdown: Array<() => unknown> = [];
   const { tools, runtime } = registerRexCodemodeTools(
@@ -235,7 +240,7 @@ function register(socketPath: string): Registered {
       on: (_event, handler) => shutdown.push(handler),
     },
     {
-      here: { sessionId, blockId },
+      here,
       makeLayer: () =>
         rexSdkLayerFromOptions({
           server: socketPath,
@@ -379,6 +384,24 @@ describe("rex codemode tools", () => {
 
     expect(await search({ query: "zzzz" })).toEqual({ tools: [], total: 0 });
     expect(server.requests().length).toBe(firstRequest);
+  });
+
+  test("rex_search resolves the session from REX_BLOCK without querying for ordinary searches", async () => {
+    const blockOnly = register(server.socketPath, rexHereFromEnv({ REX_BLOCK: blockId }));
+    try {
+      const contents = await callTool(blockOnly.tools, REX_SEARCH_TOOL_NAME, {});
+      expect(fieldOf(contents.structuredContent, "here")).toEqual(here);
+      expect(server.requestsFor("target.resolve").at(-1)?.payload).toEqual({
+        kinds: ["block"],
+        queries: [blockId],
+      });
+
+      const requestCount = server.requests().length;
+      await callTool(blockOnly.tools, REX_SEARCH_TOOL_NAME, { query: "terminal" });
+      expect(server.requests().length).toBe(requestCount);
+    } finally {
+      for (const handler of blockOnly.shutdown) await handler();
+    }
   });
 
   test("every tool crosses the socket and resolves to JSON matching its output schema", async () => {
@@ -609,11 +632,11 @@ describe("rex codemode tools", () => {
   });
 });
 
-test("a missing server rejects with the SDK's connection error, and the runtime recovers", async () => {
+test("a missing server leaves a block-only session null and rejects operations with the SDK's connection error", async () => {
   const { tools, runtime } = registerRexCodemodeTools(
     { registerTool: () => undefined, on: () => undefined },
     {
-      here: { sessionId: null, blockId: null },
+      here: { sessionId: null, blockId },
       makeLayer: () =>
         Layer.fresh(
           rexSdkLayerFromOptions({
@@ -624,6 +647,8 @@ test("a missing server rejects with the SDK's connection error, and the runtime 
     },
   );
   try {
+    const search = await callTool(tools, REX_SEARCH_TOOL_NAME, {});
+    expect(fieldOf(search.structuredContent, "here")).toEqual({ sessionId: null, blockId });
     const error = await rejection(callTool(tools, "rex_server_status", {}));
     expect(error.tag).toMatch(/^RexConnection/);
   } finally {
@@ -638,5 +663,6 @@ test("tools register only inside Rex unless forced", () => {
   expect(shouldRegisterRexTools({ PI_REX_CODEMODE: "1" })).toBe(true);
   expect(shouldRegisterRexTools({ REX_SESSION: sessionId, PI_REX_CODEMODE: "0" })).toBe(false);
   expect(rexHereFromEnv({ REX_SESSION: sessionId, REX_BLOCK: blockId })).toEqual(here);
+  expect(rexHereFromEnv({ REX_BLOCK: blockId })).toEqual({ sessionId: null, blockId });
   expect(rexHereFromEnv({})).toEqual({ sessionId: null, blockId: null });
 });

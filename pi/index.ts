@@ -11,7 +11,7 @@ import type {
   ToolDefinition,
   ToolNamespace,
 } from "@earendil-works/pi-coding-agent";
-import type { Layer } from "effect";
+import type { Effect, Layer } from "effect";
 import type { TSchema } from "typebox";
 import { rexSdkLayerFromOptions, type RexSdk } from "../src/index.ts";
 import { rexToolOperations, type RexToolOperation } from "./rex-tool-operations.ts";
@@ -25,11 +25,12 @@ import {
   rexToolOutputJsonSchema,
   rexToolParametersJsonSchema,
   rexToolVoidOutputJsonSchema,
+  type RexToolJson,
 } from "./rex-tool-schemas.ts";
 import {
+  makeRexSearchProgram,
+  rexSearchToolDefinition,
   rexToolInstructions,
-  runRexSearch,
-  toRexSearchToolDefinition,
   type RexSearchHere,
 } from "./rex-tool-search.ts";
 
@@ -51,26 +52,30 @@ function paramsObject(params: unknown): { readonly [key: string]: unknown } {
   return typeof params === "object" && params !== null ? { ...params } : {};
 }
 
+async function runRexTool(
+  runtime: RexToolRuntime,
+  program: Effect.Effect<RexToolJson, unknown, RexSdk>,
+  signal: AbortSignal | undefined,
+): Promise<AgentToolResult<undefined>> {
+  const exit = await runtime.run(program, signal);
+  try {
+    return toRexToolResult(exit);
+  } catch (error) {
+    // A configuration failure is cached by the runtime's Layer; rebuild it on the next call.
+    if (error instanceof RexToolError && error.tag === "RexConfigurationError") {
+      await runtime.dispose();
+    }
+    throw error;
+  }
+}
+
 /** Builds the pi tool for one Rex operation. */
 export function toRexCodemodeTool(
   operation: RexToolOperation,
   runtime: RexToolRuntime,
 ): RexCodemodeTool {
-  const call = async (params: unknown, signal?: AbortSignal) => {
-    const exit = await runtime.run(
-      makeRexToolProgram(operation, paramsObject(params), runtime.marks),
-      signal,
-    );
-    try {
-      return toRexToolResult(exit);
-    } catch (error) {
-      // A configuration failure is cached by the runtime's Layer; rebuild it on the next call.
-      if (error instanceof RexToolError && error.tag === "RexConfigurationError") {
-        await runtime.dispose();
-      }
-      throw error;
-    }
-  };
+  const call = (params: unknown, signal?: AbortSignal) =>
+    runRexTool(runtime, makeRexToolProgram(operation, paramsObject(params), runtime.marks), signal);
   return {
     call,
     definition: {
@@ -131,16 +136,19 @@ export function registerRexCodemodeTools(
       }));
   const runtime = new RexToolRuntime(makeLayer);
   const here = options.here ?? rexHereFromEnv(process.env);
-  const searchDefinition = {
-    ...toRexSearchToolDefinition(rexToolOperations, here),
+  const callSearch = (params: unknown, signal?: AbortSignal) =>
+    runRexTool(runtime, makeRexSearchProgram(rexToolOperations, params, here), signal);
+  const searchDefinition: ToolDefinition<TSchema, undefined> = {
+    ...rexSearchToolDefinition,
     namespace: rexToolNamespace,
+    execute: (_toolCallId, params, signal) => callSearch(params, signal),
   };
   const tools = new Map<string, RexCodemodeTool>([
     [
       searchDefinition.name,
       {
         definition: searchDefinition,
-        call: async (params) => runRexSearch(rexToolOperations, params, here),
+        call: callSearch,
       },
     ],
   ]);

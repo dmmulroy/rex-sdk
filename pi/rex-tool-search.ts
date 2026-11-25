@@ -3,9 +3,13 @@
  * MCP server (`search` + `execute`). Every operation tool is deferred, so the listing costs one
  * small declaration; scripts search here, read a signature with `describeTool(name)`, then call it.
  */
-import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Effect, Option } from "effect";
 import type { TSchema } from "typebox";
+import type { SessionId } from "../src/rex-domain.ts";
+import { RexSdk } from "../src/rex-sdk.ts";
 import type { RexToolOperation } from "./rex-tool-operations.ts";
+import { encodeRexToolResult, type RexToolJson } from "./rex-tool-schemas.ts";
 
 export const REX_SEARCH_TOOL_NAME = "rex_search";
 
@@ -39,7 +43,7 @@ export interface RexSearchNamespace {
   readonly tools: number;
 }
 
-/** The session and block pi runs in, from `REX_SESSION` and `REX_BLOCK`. */
+/** The session and block pi runs in. The session may be resolved from the block. */
 export interface RexSearchHere {
   readonly sessionId: string | null;
   readonly blockId: string | null;
@@ -215,35 +219,42 @@ function readSearchInput(params: unknown): RexSearchInput {
   };
 }
 
-/** Runs one `rex_search` call: the result as text and as `structuredContent`. */
-export function runRexSearch(
+/**
+ * Runs `rex_search` on the SDK runtime. Only a table-of-contents call resolves a missing session
+ * from its block. Resolution is best effort so discovery still works when the server is unavailable.
+ */
+export function makeRexSearchProgram(
   operations: readonly RexToolOperation[],
   params: unknown,
   here: RexSearchHere,
-): AgentToolResult<undefined> {
-  const result = searchRexTools(operations, readSearchInput(params), here);
-  const text = JSON.stringify(result);
-  return {
-    content: [{ type: "text", text }],
-    structuredContent: JSON.parse(text),
-    details: undefined,
-  };
+): Effect.Effect<RexToolJson, unknown, RexSdk> {
+  return Effect.gen(function* () {
+    const result = searchRexTools(operations, readSearchInput(params), here);
+    if (!("here" in result) || here.sessionId !== null || here.blockId === null) {
+      return encodeRexToolResult(result);
+    }
+    const rex = yield* RexSdk;
+    const sessionId = yield* rex.targets
+      .sessionForBlock(rex.ids.block(here.blockId))
+      .pipe(Effect.catch(() => Effect.succeed(Option.none<SessionId>())));
+    return encodeRexToolResult({
+      ...result,
+      here: { ...result.here, sessionId: Option.getOrNull(sessionId) },
+    });
+  });
 }
 
-/** The listed entry point: searches the deferred Rex tools without touching the Rex server. */
-export function toRexSearchToolDefinition(
-  operations: readonly RexToolOperation[],
-  here: RexSearchHere,
-): Omit<ToolDefinition<TSchema, undefined>, "namespace"> {
-  return {
-    name: REX_SEARCH_TOOL_NAME,
-    label: "rex search",
-    description:
-      "Find Rex tools for sessions, windows, blocks (panes), terminals, and events. Call with no arguments first for usage instructions, the session and block pi runs in, and the namespaces.",
-    parameters: rexSearchParameters,
-    outputSchema: rexSearchOutput,
-    exposure: "codemode",
-    annotations: { readOnlyHint: true, openWorldHint: false },
-    execute: async (_toolCallId, params) => runRexSearch(operations, params, here),
-  };
-}
+/** The listed tool's declaration; registration adds its namespace and `execute`. */
+export const rexSearchToolDefinition: Omit<
+  ToolDefinition<TSchema, undefined>,
+  "namespace" | "execute"
+> = {
+  name: REX_SEARCH_TOOL_NAME,
+  label: "rex search",
+  description:
+    "Find Rex tools for sessions, windows, blocks (panes), terminals, and events. Call with no arguments first for usage instructions, the session and block pi runs in, and the namespaces.",
+  parameters: rexSearchParameters,
+  outputSchema: rexSearchOutput,
+  exposure: "codemode",
+  annotations: { readOnlyHint: true, openWorldHint: false },
+};

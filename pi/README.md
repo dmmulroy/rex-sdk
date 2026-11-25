@@ -36,8 +36,9 @@ return done.timedOut ? "still running" : done.match.groups[0];
 - **Only `rex_search` is listed** in the codemode description, after Cloudflare's Code Mode MCP
   server. Every operation tool is `deferred`: callable, never listed. Scripts discover tools this
   way:
-  - `rex_search({})` returns the usage instructions, `here` (the session and block pi runs in,
-    from `REX_SESSION` and `REX_BLOCK`), and a table of contents of namespaces with tool counts.
+  - `rex_search({})` returns the usage instructions, `here` (the session and block pi runs in),
+    and a table of contents of namespaces with tool counts. When only `REX_BLOCK` is set, the
+    extension resolves `here.sessionId` through the SDK.
   - `rex_search({ query, namespace?, limit? })` returns up to `limit` ranked hits (default 8) as
     `{ name, description, destructive? }`, plus `total`.
   - `describeTool(name)` returns one tool's full signature.

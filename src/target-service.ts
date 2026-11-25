@@ -3,11 +3,12 @@
  *
  * @since 0.1.0
  */
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Option } from "effect";
 import { RexAttachments } from "./rex-attachments.ts";
-import { RexControl } from "./rex-control.ts";
+import { RexControl, type RexRequestOptions } from "./rex-control.ts";
 import { rexCoreLayer } from "./rex-core.ts";
-import type { RexConfigurationError } from "./rex-errors.ts";
+import type { BlockId, SessionId } from "./rex-domain.ts";
+import type { RexConfigurationError, RexOperationError } from "./rex-errors.ts";
 import { rexMethodOperation, type RexMethodOperation } from "./rex-operation.ts";
 
 /**
@@ -21,6 +22,11 @@ export interface ITargetService {
   readonly resolve: RexMethodOperation<"target.resolve">;
   /** `target.complete`: lists labels, window positions, and short IDs that start with a prefix. */
   readonly complete: RexMethodOperation<"target.complete">;
+  /** The session that holds a block, or none when the block no longer exists. */
+  readonly sessionForBlock: (
+    blockId: BlockId,
+    options?: RexRequestOptions,
+  ) => Effect.Effect<Option.Option<SessionId>, RexOperationError>;
 }
 
 /**
@@ -42,9 +48,20 @@ export class TargetService extends Context.Service<TargetService, ITargetService
 export const makeTargetService = Effect.gen(function* () {
   const control = yield* RexControl;
   const attachments = yield* RexAttachments;
+  const resolve = rexMethodOperation(control, attachments, "target.resolve");
+  const sessionForBlock = Effect.fn("TargetService.sessionForBlock")(function* (
+    blockId: BlockId,
+    options?: RexRequestOptions,
+  ) {
+    const { results } = yield* resolve({ kinds: ["block"], queries: [blockId] }, options);
+    const result = results[0];
+    if (result?.status !== "resolved") return Option.none<SessionId>();
+    return Option.flatMap(result.target, (target) => target.sessionId);
+  });
   return TargetService.of({
-    resolve: rexMethodOperation(control, attachments, "target.resolve"),
+    resolve,
     complete: rexMethodOperation(control, attachments, "target.complete"),
+    sessionForBlock,
   });
 });
 
