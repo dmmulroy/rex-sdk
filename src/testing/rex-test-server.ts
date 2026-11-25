@@ -13,14 +13,13 @@
  * @since 0.1.0
  */
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
-import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import { Effect, Schema } from "effect";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
+import { rexWireValidators, rexWireViolation } from "./rex-wire-contract.ts";
 
 function rawDataBytes(data: RawData): Buffer {
   if (Buffer.isBuffer(data)) return data;
@@ -116,6 +115,8 @@ export interface RexTestServerBytesConnection {
   /** The data reference the stream was opened for, such as `download:<uuid>`. */
   readonly ref: string;
   readonly send: (chunk: Uint8Array) => void;
+  /** Sends a text message, which the protocol forbids, for violation tests. */
+  readonly sendText: (text: string) => void;
   readonly close: (code: number, reason?: string) => void;
   /** Calls `listener` for each binary message the client sends, empty half-close included. */
   readonly onMessage: (listener: (chunk: Uint8Array) => void) => void;
@@ -143,6 +144,12 @@ export interface RexTestServerOptions {
   readonly maxMessageBytes?: number | undefined;
   /** Protocol name in the welcome; defaults to `rex.control.v1`. */
   readonly protocol?: string | undefined;
+  /**
+   * Resume the client of a hello that presents a reconnect token this server issued, as Rex does
+   * within its grace period: the welcome keeps the client's ID and says `resumed: true`.
+   * Defaults to false: every connection is a new client.
+   */
+  readonly resumeClients?: boolean | undefined;
 }
 
 /** The running test server. */
@@ -187,107 +194,6 @@ export interface IRexTestServer {
   readonly bytesStreams: () => ReadonlyArray<RexTestServerBytesRecord>;
 }
 
-const JsonSchemaObject = Schema.Record(Schema.String, Schema.Json);
-
-const ApiDocument = Schema.Struct({
-  methods: Schema.Array(
-    Schema.Struct({
-      name: Schema.String,
-      input_schema: Schema.optionalKey(JsonSchemaObject),
-      output_schema: Schema.optionalKey(JsonSchemaObject),
-    }),
-  ),
-  block_types: Schema.Array(
-    Schema.Struct({
-      creator: Schema.String,
-      methods: Schema.Array(
-        Schema.Struct({
-          invoke: Schema.Struct({ method: Schema.String }),
-          args_schema: JsonSchemaObject,
-          output_schema: JsonSchemaObject,
-        }),
-      ),
-    }),
-  ),
-});
-
-const decodeApiDocument = Schema.decodeUnknownSync(Schema.fromJsonString(ApiDocument));
-
-/**
- * Gives a schema its own `$id` and keeps only the first of identical repeated `$anchor`s.
- *
- * The server inlines the same anchored definition (such as `view-layout-node`) at several
- * places in one schema; JSON Schema requires an anchor to be unique within its resource.
- */
-function standaloneJsonSchema(id: string, schema: { readonly [key: string]: Schema.Json }) {
-  const seen = new Set<string>();
-  const strip = (value: Schema.Json): Schema.Json => {
-    if (Array.isArray(value)) return value.map(strip);
-    if (value === null || typeof value !== "object") return value;
-    const entries = Object.entries(value).flatMap(([key, child]): Array<[string, Schema.Json]> => {
-      if (key === "$anchor" && typeof child === "string") {
-        if (seen.has(child)) return [];
-        seen.add(child);
-      }
-      return [[key, strip(child)]];
-    });
-    return Object.fromEntries(entries);
-  };
-  return {
-    ...Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, strip(value)])),
-    $id: id,
-  };
-}
-
-interface MethodValidators {
-  readonly input: ValidateFunction | undefined;
-  readonly output: ValidateFunction | undefined;
-}
-
-function loadValidators(): ReadonlyMap<string, MethodValidators> {
-  const document = decodeApiDocument(
-    readFileSync(join(import.meta.dirname, "../../schema/rex-api.json"), "utf8"),
-  );
-  const ajv = new Ajv2020({ strict: false, allErrors: true });
-  ajv.addFormat("date-time", true);
-  const validators = new Map<string, MethodValidators>();
-  for (const method of document.methods) {
-    validators.set(method.name, {
-      input:
-        method.input_schema === undefined
-          ? undefined
-          : ajv.compile(standaloneJsonSchema(`rex:${method.name}:input`, method.input_schema)),
-      output:
-        method.output_schema === undefined
-          ? undefined
-          : ajv.compile(standaloneJsonSchema(`rex:${method.name}:output`, method.output_schema)),
-    });
-  }
-  for (const blockType of document.block_types) {
-    for (const method of blockType.methods) {
-      validators.set(method.invoke.method, {
-        input: ajv.compile({
-          $id: `rex:${method.invoke.method}:input`,
-          type: "object",
-          properties: {
-            session_id: { type: "string" },
-            block_id: { type: "string" },
-            args: method.args_schema,
-          },
-          required: ["session_id", "block_id"],
-          additionalProperties: false,
-        }),
-        output: ajv.compile(
-          standaloneJsonSchema(`rex:${method.invoke.method}:output`, method.output_schema),
-        ),
-      });
-    }
-  }
-  return validators;
-}
-
-let cachedValidators: ReadonlyMap<string, MethodValidators> | undefined;
-
 const ControlMessage = Schema.Struct({
   type: Schema.String,
   id: Schema.optionalKey(Schema.String),
@@ -295,6 +201,12 @@ const ControlMessage = Schema.Struct({
   payload: Schema.optionalKey(Schema.Json),
 });
 const decodeControlMessage = Schema.decodeUnknownOption(Schema.fromJsonString(ControlMessage));
+const decodeHelloToken = (hello: unknown): string | undefined => {
+  const decoded = Schema.decodeUnknownOption(
+    Schema.Struct({ reconnect_token: Schema.optionalKey(Schema.String) }),
+  )(hello);
+  return decoded._tag === "Some" ? decoded.value.reconnect_token : undefined;
+};
 
 const decodeDataConnectPayload = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -326,7 +238,7 @@ interface DataConnectionState {
 export function startRexTestServer(options: RexTestServerOptions = {}) {
   return Effect.acquireRelease(
     Effect.callback<IRexTestServer & { readonly stop: () => Promise<void> }>((resume) => {
-      const validators = (cachedValidators ??= loadValidators());
+      const validators = rexWireValidators();
       const directory = mkdtempSync("/tmp/rex-sdk-");
       const socketPath = join(directory, "server.sock");
       const handlers = new Map<string, RexTestServerHandler>();
@@ -347,6 +259,8 @@ export function startRexTestServer(options: RexTestServerOptions = {}) {
         return ticketBytes.toString("base64url");
       };
       const dataHandshakes: Array<Uint8Array> = [];
+      /** The client each issued reconnect token continues. */
+      const clientsByToken = new Map<string, string>();
       let nextConnectionId = 1;
       let nextTicket = 1;
 
@@ -376,15 +290,7 @@ export function startRexTestServer(options: RexTestServerOptions = {}) {
         }
       });
 
-      function validate(
-        method: string,
-        side: "input" | "output",
-        value: unknown,
-      ): string | undefined {
-        const validator = validators.get(method)?.[side];
-        if (validator === undefined || validator(value)) return undefined;
-        return `${method} ${side}: ${JSON.stringify(validator.errors)}`;
-      }
+      const validate = rexWireViolation;
 
       function acceptControl(ws: WebSocket) {
         if (ws.protocol !== "rex.control.v1") {
@@ -432,15 +338,22 @@ export function startRexTestServer(options: RexTestServerOptions = {}) {
               return;
             }
             const apiRevision = options.apiRevision ?? 18;
+            const presented = decodeHelloToken(hello);
+            const resumedFrom =
+              options.resumeClients === true && presented !== undefined
+                ? clientsByToken.get(presented)
+                : undefined;
+            const clientId = resumedFrom ?? `client:test-${id}`;
+            clientsByToken.set(`token-${id}`, clientId);
             ws.send(
               JSON.stringify({
                 type: "welcome",
                 protocol: options.protocol ?? "rex.control.v1",
                 limits: { max_message_bytes: options.maxMessageBytes ?? 1_048_576 },
                 client: {
-                  id: `client:test-${id}`,
+                  id: clientId,
                   reconnect_token: `token-${id}`,
-                  resumed: false,
+                  resumed: resumedFrom !== undefined,
                 },
                 api_revision: apiRevision,
                 api_server_revision: apiRevision,
@@ -579,6 +492,7 @@ export function startRexTestServer(options: RexTestServerOptions = {}) {
         peer({
           ref,
           send: (chunk) => ws.send(chunk, { binary: true }),
+          sendText: (text) => ws.send(text),
           close: (code, reason) => ws.close(code, reason),
           onMessage: (listener) =>
             ws.on("message", (data) => listener(new Uint8Array(rawDataBytes(data)))),

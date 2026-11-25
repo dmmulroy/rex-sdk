@@ -51,19 +51,25 @@ API revision 18** only.
   check. Only `src/rex-live.test.ts` may touch a real server, in a session it creates and
   destroys.
 - Every new server or block method needs an SDK operation and a contract-sweep row; the sweep
-  fails until the table names every method.
+  fails until the table names every method. `src/rex-wire-properties.test.ts` covers its codecs
+  without changes.
+- A new pure parser or codec gets a property suite against a reference model; a new protocol state
+  machine gets a model test driven by generated scripts (`src/testing/rex-property.ts`). Enumerate
+  a finite domain completely in `src/rex-exhaustive.test.ts` instead of sampling it. When a property
+  fails, decide whether the model or the SDK is wrong before changing either.
 - Do not install dependencies, refresh snapshots, commit, or modify unrelated work unless the
   task explicitly asks for it.
 
 ## Commands
 
-| Command                                      | Use                                                               |
-| -------------------------------------------- | ----------------------------------------------------------------- |
-| `vp run ready`                               | Full gate: generated-code drift, `vp check`, `vp test`, `vp pack` |
-| `vp test run <file>`                         | One suite                                                         |
-| `vp run test:live`                           | Opt-in suite against the real server (`REX_SDK_LIVE=1`)           |
-| `vp run generate` / `vp run check:generated` | Regenerate codecs / check for drift                               |
-| `vp run fetch:rex-api`                       | Refresh server snapshots when moving to a new Rex release         |
+| Command                                      | Use                                                                  |
+| -------------------------------------------- | -------------------------------------------------------------------- |
+| `vp run ready`                               | Full gate: generated-code drift, `vp check`, `vp test`, `vp pack`    |
+| `vp test run <file>`                         | One suite                                                            |
+| `vp run test:live`                           | Opt-in suite against the real server (`REX_SDK_LIVE=1`)              |
+| `vp run test:props`                          | Property suites at 20× runs; replay a failure with its printed value |
+| `vp run generate` / `vp run check:generated` | Regenerate codecs / check for drift                                  |
+| `vp run fetch:rex-api`                       | Refresh server snapshots when moving to a new Rex release            |
 
 <!--VITE PLUS START-->
 

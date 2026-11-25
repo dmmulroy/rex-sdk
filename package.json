@@ -25,6 +25,7 @@
     "fetch:rex-api": "node scripts/fetch-rex-api.ts",
     "build": "vp pack",
     "test:live": "REX_SDK_LIVE=1 vp test run src/rex-live.test.ts",
+    "test:props": "REX_PROPERTY_SCALE=${REX_PROPERTY_SCALE:-20} vp test run properties exhaustive",
     "ready": "vp run check:generated && vp check && vp test && vp pack",
     "prepare": "vp config || true"
   },

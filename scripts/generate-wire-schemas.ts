@@ -14,7 +14,9 @@
  *   `null` or missing to empty arrays. Enum strings stay plain strings, because the server adds
  *   values and tells clients to tolerate unknown ones.
  * - Inputs (method arguments, block method arguments, flavor options) keep plain optional keys,
- *   strict enum literals, and numeric bounds, and never send `null`.
+ *   strict enum literals, and numeric bounds, accept only finite numbers, and never send `null`.
+ * - A result's array of nullable arrays decodes each `null` to an empty array, as Go writes a
+ *   nil inner slice as `null`.
  * - Fields named for an ID kind (`session_id`, `block_ids`, …) use the branded ID schemas. A
  *   required ID decodes as the ID itself even when the schema marks it nullable.
  */
@@ -232,14 +234,14 @@ function valueSchema(
     case "integer":
       return `Schema.Int${numberChecks(node, context)}`;
     case "number":
-      return `Schema.Number${numberChecks(node, context)}`;
+      // JSON has no NaN or infinity: `JSON.stringify` would send them as null.
+      return context.mode === "input"
+        ? `Schema.Finite${numberChecks(node, context)}`
+        : `Schema.Number${numberChecks(node, context)}`;
     case "boolean":
       return "Schema.Boolean";
     case "array": {
-      const item =
-        node.items === undefined
-          ? "Schema.Json"
-          : valueSchema(node.items, context, singularField(fieldName), indent);
+      const item = arrayItemSchema(node, context, fieldName, indent);
       if (
         node.minItems !== undefined &&
         node.minItems === node.maxItems &&
@@ -264,12 +266,22 @@ function singularField(fieldName: string | undefined): string | undefined {
 function arrayItemSchema(
   node: JsonSchemaNode,
   context: GenerationContext,
-  fieldName: string,
+  fieldName: string | undefined,
   indent: string,
 ): string {
-  return node.items === undefined
-    ? "Schema.Json"
-    : valueSchema(node.items, context, singularField(fieldName), indent);
+  const items = node.items;
+  if (items === undefined) return "Schema.Json";
+  const singular = singularField(fieldName);
+  // Go writes a nil inner slice as null, so a result's nested array may hold nulls.
+  if (
+    context.mode === "result" &&
+    isNullable(items) &&
+    isArrayNode(items) &&
+    items.$ref === undefined
+  ) {
+    return `arrayFromNullOr(${arrayItemSchema(items, context, singular, indent)})`;
+  }
+  return valueSchema(items, context, singular, indent);
 }
 
 /**

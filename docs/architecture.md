@@ -199,11 +199,22 @@ exposed as `config.ambient` and never used implicitly.
 | `src/rex-sdk.test.ts`             | Attachment, input validation, events, `watchView`, `read` paging, `waitForExit`, data streams with resume, client request handlers, and configuration.                                                                                                                                                                                    |
 | `src/rex-bytes-stream.test.ts`    | Downloads, pastes, and tunnels over `rex.data.bytes.v1`: the completion rule, end markers, 4001 aborts, limits, batching, 64 KiB messages, and both forwards over real TCP sockets.                                                                                                                                                       |
 | `src/rex-terminal-stream.test.ts` | The stream parser at every split point, and the handshake byte layouts.                                                                                                                                                                                                                                                                   |
+| `src/rex-wire-properties.test.ts` | Property checks of every server method, block method, and event against the server's own JSON Schemas (`src/testing/rex-wire-contract.ts`): what the SDK encodes passes ajv, what the server sends decodes, results from a newer server (unknown enum values and fields) still decode, and a null or malformed required ID fails.         |
+| `src/rex-*-properties.test.ts`    | Pure modules against reference models (stream parser, handshake codec, terminal text and marks, output queries, layouts, event selection), and the control connection, attachments, `watchView`, downloads, stream resume, and `waitForExit` as state machines driven by generated scripts against the test server.                       |
+| `src/rex-exhaustive.test.ts`      | Finite domains enumerated completely: error codes, REJECT reasons, close codes 1000–4999, short handshake replies, ticket characters, every pair of stream split points, and every pair of event stream options. Every download script of up to three actions is in `rex-data-stream-properties.test.ts`.                                 |
 | `src/rex-live.test.ts`            | Opt-in (`vp run test:live`): every namespace against a real server, in a session the suite creates and destroys.                                                                                                                                                                                                                          |
 | `vp run check:generated`          | The generated codecs match the snapshots.                                                                                                                                                                                                                                                                                                 |
 
 Mutation checks during development confirmed the sweep and behavior suites fail when request
-encoding, attachment sharing, or the resume byte count is broken.
+encoding, attachment sharing, or the resume byte count is broken, and that the property suites fail
+for misrouted responses, attachments kept across a new client, re-emitted views, a lost resume
+byte, a download that completes without a half-close, and a missed exit recheck.
+
+Property checks run on Effect's native `Arbitrary` engine through `src/testing/rex-property.ts`.
+`vp test` runs a quick pass; `vp run test:props` runs every property 20 times as long
+(`REX_PROPERTY_SCALE`). A failure prints its shrunk input and a `REX_PROPERTY_REPLAY` value that
+reproduces it; `REX_PROPERTY_SEED` fixes the seed of a whole run. Turn a failure worth keeping into
+an ordinary test, since replay values don't survive Effect upgrades.
 
 ## Known server behavior
 

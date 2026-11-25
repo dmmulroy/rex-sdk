@@ -9,8 +9,10 @@
  *
  * Rex places messages in the stream as APC sequences, `ESC _ rex1;<nonce>;<json> ESC \`, where
  * the nonce is the WELCOME's channel nonce in decimal. A sequence with another nonce was printed
- * by a program, so it stays in the output unchanged. The parser keeps state across chunks,
- * because a sequence can be split between two messages.
+ * by a program, so it stays in the output unchanged. As in a terminal, any ESC ends the sequence:
+ * Rex's JSON never holds one, so a sequence whose body meets an ESC other than its `ESC \` is a
+ * program's, and a Rex message right after it is still found. The parser keeps state across
+ * chunks, because a sequence can be split between two messages.
  *
  * @since 0.1.0
  */
@@ -175,11 +177,16 @@ export function makeRexTerminalStreamParser(nonce: bigint): RexTerminalStreamPar
     return "yes";
   };
 
+  /**
+   * The end of a sequence body starting at `from`: the first ESC, which ends it either way. It is
+   * Rex's terminator only as `ESC \`; any other ESC means the sequence is not Rex's.
+   */
   const findTerminator = (data: Uint8Array, from: number) => {
-    for (let index = from; index + 1 < data.length; index += 1) {
-      if (data[index] === ESC && data[index + 1] === STRING_TERMINATOR) return index;
-    }
-    return -1;
+    const escape = data.indexOf(ESC, from);
+    if (escape === -1 || escape + 1 >= data.length) return { _tag: "Incomplete" } as const;
+    return data[escape + 1] === STRING_TERMINATOR
+      ? ({ _tag: "Terminated", at: escape } as const)
+      : ({ _tag: "Interrupted" } as const);
   };
 
   const push = (chunk: Uint8Array): ReadonlyArray<RexTerminalStreamItem> => {
@@ -209,8 +216,13 @@ export function makeRexTerminalStreamParser(nonce: bigint): RexTerminalStreamPar
         continue;
       }
       const bodyStart = escape + 2 + REX_PREFIX.length;
-      const terminator = prefix === "yes" ? findTerminator(data, bodyStart) : -1;
-      if (terminator === -1) {
+      const end =
+        prefix === "yes" ? findTerminator(data, bodyStart) : ({ _tag: "Incomplete" } as const);
+      if (end._tag === "Interrupted") {
+        index = escape + 1;
+        continue;
+      }
+      if (end._tag === "Incomplete") {
         if (data.length - escape > MAX_PENDING_SEQUENCE) {
           index = escape + 1;
           continue;
@@ -219,6 +231,7 @@ export function makeRexTerminalStreamParser(nonce: bigint): RexTerminalStreamPar
         pending = data.slice(escape);
         return items;
       }
+      const terminator = end.at;
       const body = decoder.decode(data.subarray(bodyStart, terminator));
       const separator = body.indexOf(";");
       const message =

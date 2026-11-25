@@ -560,7 +560,7 @@ export const ClientKeymapResult = Schema.Struct({
     /** True if keys the mode doesn't bind are ignored while it's active. If false, they do what they do outside the mode. */
     exclusive: Schema.Boolean,
     /** Keys that must not reach the bindings outside the mode while it's active. If the mode also binds one, that binding still runs. Each is spelled like a binding's keys. */
-    blocked: optionalArrayFromNullOr(Schema.Array(Schema.String)),
+    blocked: optionalArrayFromNullOr(arrayFromNullOr(Schema.String)),
   })),
   /** The configuration file the keymap came from. Present even when the file doesn't exist, so you can tell the user where to create it. */
   config: Schema.Struct({
@@ -1955,15 +1955,15 @@ export const SessionFloatBlockInput = Schema.Struct({
   /** The block to float. It must be in its window's layout, not already in a floating layer. */
   blockId: BlockId,
   /** Where the new floating layer sits, as [x, y, w, h] fractions of the window's width and height. It must fit inside the window. */
-  bounds: Schema.Union([Schema.Tuple([Schema.Number, Schema.Number, Schema.Number, Schema.Number]), Schema.Struct({
+  bounds: Schema.Union([Schema.Tuple([Schema.Finite, Schema.Finite, Schema.Finite, Schema.Finite]), Schema.Struct({
     /** The left edge, as a fraction of the window's width. */
-    x: Schema.Number,
+    x: Schema.Finite,
     /** The top edge, as a fraction of the window's height. */
-    y: Schema.Number,
+    y: Schema.Finite,
     /** The width, as a fraction of the window's width. */
-    w: Schema.Number,
+    w: Schema.Finite,
     /** The height, as a fraction of the window's height. */
-    h: Schema.Number,
+    h: Schema.Finite,
   })]),
 }).pipe(Schema.encodeKeys({ sessionId: "session_id", blockId: "block_id" }));
 /** Arguments of `session.float_block`: Move a block out of its window's layout into a new floating layer. */
@@ -2286,7 +2286,7 @@ export const SessionMoveBlockInput = Schema.Struct({
   /** Where the moved block goes: 'before' for the left or top part, or 'after' for the right or bottom part. Defaults to after. */
   side: Schema.optionalKey(Schema.Literals(["before", "after"])),
   /** The fraction of the space that the before part gets, greater than 0 and less than 1. Defaults to 0.5. */
-  ratio: Schema.optionalKey(Schema.Number),
+  ratio: Schema.optionalKey(Schema.Finite),
 }).pipe(Schema.encodeKeys({ sessionId: "session_id", blockId: "block_id", anchorBlockId: "anchor_block_id" }));
 /** Arguments of `session.move_block`: Move a block, or place a detached one, in a new split beside another block. */
 export type SessionMoveBlockInput = typeof SessionMoveBlockInput.Type;
@@ -2354,15 +2354,15 @@ export const SessionNewLayerInput = Schema.Struct({
   /** The window to add the floating layer to. Leave it out to use the active window. */
   windowId: Schema.optionalKey(WindowId),
   /** Where the new floating layer sits, as [x, y, w, h] fractions of the window's width and height. It must fit inside the window. */
-  bounds: Schema.Union([Schema.Tuple([Schema.Number, Schema.Number, Schema.Number, Schema.Number]), Schema.Struct({
+  bounds: Schema.Union([Schema.Tuple([Schema.Finite, Schema.Finite, Schema.Finite, Schema.Finite]), Schema.Struct({
     /** The left edge, as a fraction of the window's width. */
-    x: Schema.Number,
+    x: Schema.Finite,
     /** The top edge, as a fraction of the window's height. */
-    y: Schema.Number,
+    y: Schema.Finite,
     /** The width, as a fraction of the window's width. */
-    w: Schema.Number,
+    w: Schema.Finite,
     /** The height, as a fraction of the window's height. */
-    h: Schema.Number,
+    h: Schema.Finite,
   })]),
   /** The blocks to create in the floating layer and how to arrange them. Each node holds either block, with a flavor and optional options and label, or split, with direction, before, after, and an optional ratio. */
   layout: Schema.Record(Schema.String, Schema.Json),
@@ -2397,7 +2397,7 @@ export const SessionNewSplitInput = Schema.Struct({
   /** Where the new blocks go: 'before' for the left or top part, or 'after' for the right or bottom part. */
   side: Schema.Literals(["before", "after"]),
   /** The fraction of the space that the before part gets, greater than 0 and less than 1. Defaults to 0.5. */
-  ratio: Schema.optionalKey(Schema.Number),
+  ratio: Schema.optionalKey(Schema.Finite),
   /** The blocks to create beside the anchor and how to arrange them. Each node holds either block, with a flavor and optional options and label, or split, with direction, before, after, and an optional ratio. */
   layout: Schema.Record(Schema.String, Schema.Json),
   /** Whether to make the anchor's window active and focus the first new block. Defaults to false. */
@@ -2498,15 +2498,15 @@ export const SessionResizeLayerInput = Schema.Struct({
   /** The floating layer to move or resize. */
   layerId: LayerId,
   /** The layer's new position and size, as [x, y, w, h] fractions of the window's width and height. It must fit inside the window. */
-  bounds: Schema.Union([Schema.Tuple([Schema.Number, Schema.Number, Schema.Number, Schema.Number]), Schema.Struct({
+  bounds: Schema.Union([Schema.Tuple([Schema.Finite, Schema.Finite, Schema.Finite, Schema.Finite]), Schema.Struct({
     /** The left edge, as a fraction of the window's width. */
-    x: Schema.Number,
+    x: Schema.Finite,
     /** The top edge, as a fraction of the window's height. */
-    y: Schema.Number,
+    y: Schema.Finite,
     /** The width, as a fraction of the window's width. */
-    w: Schema.Number,
+    w: Schema.Finite,
     /** The height, as a fraction of the window's height. */
-    h: Schema.Number,
+    h: Schema.Finite,
   })]),
 }).pipe(Schema.encodeKeys({ sessionId: "session_id", layerId: "layer_id" }));
 /** Arguments of `session.resize_layer`: Move or resize a floating layer. */
@@ -2531,7 +2531,7 @@ export const SessionResizePaneInput = Schema.Struct({
   /** A block on the right of the border, or below it when direction is vertical. */
   afterBlockId: BlockId,
   /** The fraction of the split's space that the before part gets, greater than 0 and less than 1. */
-  ratio: Schema.Number,
+  ratio: Schema.Finite,
 }).pipe(Schema.encodeKeys({ sessionId: "session_id", beforeBlockId: "before_block_id", afterBlockId: "after_block_id" }));
 /** Arguments of `session.resize_pane`: Move the border between two blocks to change their sizes. */
 export type SessionResizePaneInput = typeof SessionResizePaneInput.Type;

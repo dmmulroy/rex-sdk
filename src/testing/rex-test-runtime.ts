@@ -35,19 +35,30 @@ export function runRexSdkTest<A, E>(
   body: (server: IRexTestServer) => Effect.Effect<A, E, RexSdk | RexControl | Scope.Scope>,
   options: RexSdkTestOptions = {},
 ): Promise<A> {
-  return Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const server = yield* startRexTestServer(options.server);
-        const layer: Layer.Layer<RexSdk | RexControl, unknown> = rexSdkLayerFromOptions({
-          server: server.socketPath,
-          client: { kind: "agent", name: "rex-sdk-test", version: "0.0.0" },
-          ...options.config,
-        });
-        const result = yield* body(server).pipe(Effect.provide(layer));
-        expect(server.violations()).toEqual([]);
-        return result;
-      }),
-    ),
+  return Effect.runPromise(rexSdkTest(body, options));
+}
+
+/**
+ * {@link runRexSdkTest} as an Effect, for property checks that start a server per run.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export function rexSdkTest<A, E>(
+  body: (server: IRexTestServer) => Effect.Effect<A, E, RexSdk | RexControl | Scope.Scope>,
+  options: RexSdkTestOptions = {},
+): Effect.Effect<A, unknown> {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* startRexTestServer(options.server);
+      const layer: Layer.Layer<RexSdk | RexControl, unknown> = rexSdkLayerFromOptions({
+        server: server.socketPath,
+        client: { kind: "agent", name: "rex-sdk-test", version: "0.0.0" },
+        ...options.config,
+      });
+      const result = yield* body(server).pipe(Effect.provide(layer));
+      expect(server.violations()).toEqual([]);
+      return result;
+    }),
   );
 }
